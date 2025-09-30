@@ -1,12 +1,17 @@
 from typing import Union, Annotated
-
 from fastapi import FastAPI, Form
+import pymongo
 
 app = FastAPI()
 
+myclient = pymongo.MongoClient("mongodb://localhost:27017/")
+mydb = myclient["mydatabase"]
+mycol = mydb["users"]
 
 @app.get("/")
 def read_root():
+    mycol.insert_one({"user": "user", "password": "pass"})
+
     return {"Hello": "World"}
 
 
