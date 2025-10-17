@@ -6,6 +6,10 @@ import os
 
 app = FastAPI()
 
+from dotenv import load_dotenv
+
+load_dotenv()  # take environment variables
+
 client = pymongo.MongoClient(os.environ["MONGODB_URL"])
 db = client.FastAPI
 col = db.get_collection("User_Info")
