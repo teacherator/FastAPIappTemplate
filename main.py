@@ -4,9 +4,9 @@ import pymongo
 
 app = FastAPI()
 
-myclient = pymongo.MongoClient("mongodb://localhost:27017/")
-mydb = myclient["mydatabase"]
-mycol = mydb["users"]
+client = pymongo.MongoClient(os.environ["MONGODB_URL"])
+db = client.FastAPI
+col = db.get_collection("User_Info")
 
 @app.get("/")
 def read_root():
