@@ -8,6 +8,7 @@ client = pymongo.MongoClient(os.environ["MONGODB_URL"])
 db = client.FastAPI
 col = db.get_collection("User_Info")
 
+
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
