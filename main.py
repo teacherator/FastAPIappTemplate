@@ -1,9 +1,12 @@
 import os
 from typing import Union, Annotated
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Depends
 import pymongo
 from pymongo.server_api import ServerApi
 from pymongo.mongo_client import MongoClient
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+
 
 import os
 
@@ -27,9 +30,19 @@ try:
 except Exception as e:
     print(e)
 
+class User(BaseModel):
+    username: str
+    email: str | None = None
+    full_name: str | None = None
+    disabled: bool | None = None
 
 db = client.FastAPI
 col = db.get_collection("User_Info")
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def fake_hash_password(password: str):
+    return "fakehashed" + password
 
 
 
@@ -43,26 +56,38 @@ def read_root():
     return {"Hello": "World"}
 
 
-
-#example url: http://127.0.0.1:8000/items/foo-item?needy=sooooneedy&skip=0&limit=10
-@app.get("/items/{item_id}")
-def read_item(item_id: Union[str,None]=None, needy: Union[str,None]=None , skip: int = 0, limit: int | None = None):
-    print(item_id)
-    item = {"item_id": item_id, "needy": needy, "skip": skip, "limit": limit}
-    return item
-
 @app.post("/login")
 def login(username: Annotated[str, Form()], password: Annotated[str, Form()]):
     
 
     return  {"username": username, "password": password}
     
-    # user = mycol.find_one({"username": username, "password": password})
-    # if user:
-    #     return {"message": "Login successful"}
-    # else:
-    #     return {"message": "Invalid credentials"}
-    
-#HIIIII :DDDDD
+
+@app.get("/items/")
+async def read_items(token: Annotated[str, Depends(oauth2_scheme)]):
+    return {"token": token}
 
 
+def fake_decode_token(token):
+    return User(
+        username=token + "fakedecoded", email="john@example.com", full_name="John Doe"
+    )
+
+
+async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+    user = fake_decode_token(token)
+    return user
+
+
+@app.get("/users/me")
+async def read_users_me(current_user: Annotated[User, Depends(get_current_user)]):
+    return current_user
+
+
+
+
+    user = mycol.find_one({"username": username, "password": password})
+    if user:
+        return {"message": "Login successful"}
+    else:
+        return {"message": "Invalid credentials"}
