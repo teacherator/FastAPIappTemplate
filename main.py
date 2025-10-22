@@ -66,5 +66,3 @@ def login(username: Annotated[str, Form()], password: Annotated[str, Form()]):
 #HIIIII :DDDDD
 
 
-#use python -m fastapi dev main.py
-
