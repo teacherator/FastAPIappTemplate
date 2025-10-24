@@ -2,3 +2,5 @@ typing
 fastapi
 pymongo
 python-dotenv
+pwdlib[argon2]
+pyjwt
