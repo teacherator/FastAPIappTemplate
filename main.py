@@ -91,6 +91,18 @@ def fake_hash_password(password: str):
 def read_root():
     return {"Hello": "World"}
 
+@app.post("/register")
+async def register(username: str = Form(...), password: str = Form(...), email: str = Form(...), full_name: str = Form(...)):
+    hashed_password = get_password_hash(password)
+    user_dict = {
+        "username": username,
+        "full_name": full_name,
+        "email": email,
+        "hashed_password": hashed_password,
+        "disabled": False,
+    }
+    fake_users_db[username] = user_dict
+    return {"msg": "User registered successfully"}
 
 
 @app.post("/login")
@@ -176,6 +188,7 @@ async def get_current_active_user(
     if current_user.disabled:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
+
 
 @app.post("/token")
 async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
