@@ -57,7 +57,8 @@ class User(BaseModel):
     disabled: bool | None = None
 
 db = client.FastAPI
-col = db.get_collection("User_Info")
+
+user_col = db.get_collection("User_Info")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
@@ -68,7 +69,23 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 def read_root():
     return {"Hello": "World"}
 
+@app.post("/register")
+async def register_user(username: Annotated[str, Form()], password: Annotated[str, Form()], full_name: Annotated[str, Form()] = None, email: Annotated[str, Form()] = None):
+    hashed_password = get_password_hash(password) 
+    user_data = {
+        "username": username,
+        "full_name": full_name,
+        "email": email,
+        "hashed_password": hashed_password,
+        "disabled": False,
+    }
+     # Query for a movie that has the title 'Back to the Future'
+    query = { "user_name": username }
+    user_name = user_col.find_one(query)
 
+    user_col.insert_one(user_data)
+
+    return {"msg": "User registered successfully"}  
 
 @app.post("/login")
 def login(username: Annotated[str, Form()], password: Annotated[str, Form()]):
@@ -138,9 +155,3 @@ async def read_users_me(
 ):
     return current_user
 
-
-    user = mycol.find_one({"username": username, "password": password})
-    if user:
-        return {"message": "Login successful"}
-    else:
-        return {"message": "Invalid credentials"}
