@@ -63,14 +63,12 @@ user_col = db.get_collection("User_Info")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 
-
-
 @app.get("/")
 def read_root():
     return {"Hello": "World"}
 
 @app.post("/register")
-async def register_user(username: Annotated[str, Form()], password: Annotated[str, Form()], full_name: Annotated[str, Form()] = None, email: Annotated[str, Form()] = None):
+async def register_user(username: Annotated[str, Form()], password: Annotated[str, Form()], full_name: Annotated[str, Form()] = None, email: Annotated[str, Form()] = None, app: Annotated[str, Form()] = None,):
     hashed_password = get_password_hash(password) 
     user_data = {
         "username": username,
@@ -78,14 +76,18 @@ async def register_user(username: Annotated[str, Form()], password: Annotated[st
         "email": email,
         "hashed_password": hashed_password,
         "disabled": False,
+        "app": app
     }
-     # Query for a movie that has the title 'Back to the Future'
-    query = { "user_name": username }
-    user_name = user_col.find_one(query)
+     # Query for username
+    existing_user = user_col.find_one({"username": username})
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
 
     user_col.insert_one(user_data)
-
-    return {"msg": "User registered successfully"}  
+    return {"msg": "User registered successfully"}
 
 @app.post("/login")
 def login(username: Annotated[str, Form()], password: Annotated[str, Form()]):
