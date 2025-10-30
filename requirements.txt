@@ -1,5 +1,5 @@
 typing
-fastapi
+fastapi[standard]
 pymongo
 python-dotenv
 pwdlib[argon2]
