@@ -1,8 +1,7 @@
 import os
 from typing import Annotated
 from uuid import UUID, uuid4
-
-from fastapi import FastAPI, Form, Response, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Form, Cookie, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from pwdlib import PasswordHash
@@ -49,14 +48,24 @@ class SessionData(BaseModel):
     username: str
 
 # Session backend & cookie
-cookie_params = CookieParameters(cookie_name="fastapi_session", cookie_path="/")
-cookie = SessionCookie(
-    cookie_name="fastapi_session",
-    identifier="general_session",
-    cookie_params=cookie_params,
-    secret_key=SESSION_SECRET_KEY
+# Session backend & cookie
+cookie_params = CookieParameters(
+    cookie_path="/",
+    secure=False,      # set to True if using HTTPS
+    httponly=True,
+    samesite="lax"
 )
+
 backend = InMemoryBackend[UUID, SessionData]()  # In-memory for now
+
+cookie = SessionCookie(
+    cookie_name="fastapi_session",   # define directly, not from cookie_params
+    identifier="basic-cookie",
+    auto_error=True,
+    secret_key=SESSION_SECRET_KEY,
+    cookie_params=cookie_params,
+)
+
 
 # Session verifier
 class BasicVerifier(SessionVerifier[UUID, SessionData]):
@@ -136,14 +145,18 @@ async def login(
 
     response.body = b'{"message": "Login successful"}'
     response.media_type = "application/json"
-    return response
+    return {"message": "Login successful"}
+
 
 @app.get("/me")
-async def read_current_user(session_data: SessionData = Depends(verifier)):
+async def read_current_user(
+    session_data: SessionData = Depends(verifier),
+):
     return {"username": session_data.username}
 
+
 @app.post("/logout")
-async def logout(session_id: UUID = Depends(cookie)):
-    await backend.delete(session_id)
+async def logout(session_id: UUID = Cookie(None)):
     return {"message": "Logged out"}
+
 
