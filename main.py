@@ -58,34 +58,6 @@ cookie_params = CookieParameters(
 
 backend = InMemoryBackend[UUID, SessionData]()  # In-memory for now
 
-cookie = SessionCookie(
-    cookie_name="fastapi_session",   # define directly, not from cookie_params
-    identifier="basic-cookie",
-    auto_error=True,
-    secret_key=SESSION_SECRET_KEY,
-    cookie_params=cookie_params,
-)
-
-
-# Session verifier
-class BasicVerifier(SessionVerifier[UUID, SessionData]):
-    identifier = "basic-verifier"
-    auto_error = True
-
-    def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
-        self._backend = backend  # private attribute, used internally
-
-    @property
-    def backend(self):
-        return self._backend
-
-    async def verify_session(self, model: SessionData) -> bool:
-        # Check MongoDB if user exists
-        return bool(user_col.find_one({"username": model.username}))
-
-
-
-verifier = BasicVerifier(backend=backend)
 
 # Password helpers
 def get_password_hash(password: str) -> str:
@@ -148,15 +120,62 @@ async def login(
     return {"message": "Login successful"}
 
 
+# --- Session Cookie ---
+cookie = SessionCookie(
+    cookie_name="fastapi_session",
+    identifier="basic-cookie",   # must match verifier
+    auto_error=True,
+    secret_key=SESSION_SECRET_KEY,
+    cookie_params=cookie_params,
+)
+
+# --- Session Verifier ---
+class BasicVerifier(SessionVerifier[UUID, SessionData]):
+    identifier = "basic-cookie"  # ✅ match cookie identifier
+    auto_error = True
+
+    def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
+        self._backend = backend
+
+    @property
+    def backend(self):
+        return self._backend
+
+    async def verify_session(self, model: SessionData) -> bool:
+        try:
+            # Check MongoDB if user exists
+            return bool(user_col.find_one({"username": model.username}))
+        except Exception as e:
+            print("Error in verify_session:", e)
+            return False
+
+verifier = BasicVerifier(backend=backend)
+
+# --- /me route ---
 @app.get("/me")
 async def read_current_user(
-    session_data: SessionData = Depends(verifier),
+    session_id: UUID = Depends(cookie),            # read cookie
+    session_data: SessionData = Depends(verifier), # verify it
 ):
     return {"username": session_data.username}
 
 
+
 @app.post("/logout")
-async def logout(session_id: UUID = Cookie(None)):
-    return {"message": "Logged out"}
+async def logout(
+    response: Response,
+    session_id: UUID = Depends(cookie)
+):
+    # Delete the session from the backend (if it exists)
+    try:
+        await backend.delete(session_id)
+    except KeyError:
+        pass  # session already deleted or invalid
+
+    # Remove the cookie from the client
+    cookie.delete_from_response(response)
+
+    return {"message": "Logged out successfully"}
+
 
 
