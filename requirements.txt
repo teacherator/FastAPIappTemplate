@@ -7,3 +7,5 @@ pyjwt
 fastapi_sessions
 uuid
 pydantic
+dotenv
+fastapi_sessions
