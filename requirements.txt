@@ -9,3 +9,4 @@ uuid
 pydantic
 dotenv
 fastapi_sessions
+gunicorn
