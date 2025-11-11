@@ -1,8 +1,7 @@
 import os
 from typing import Annotated
 from uuid import UUID, uuid4
-from fastapi import FastAPI, Depends, HTTPException, status, Form, Cookie, Response
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import FastAPI, Depends, HTTPException, status, Form, Response
 from pydantic import BaseModel
 from pwdlib import PasswordHash
 from dotenv import load_dotenv
