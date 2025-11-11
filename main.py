@@ -68,7 +68,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # Routes
 
-""""
+"""
 @app.get("/")
 def read_root():
     return {"message": "Hello World"}
