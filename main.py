@@ -67,9 +67,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
 # Routes
+
+""""
 @app.get("/")
 def read_root():
     return {"message": "Hello World"}
+"""
+
+@app.get("/")
+async def root():
+    routes = [{"path": route.path, "name": route.name} for route in app.routes]
+    return {"message": "API is running", "routes": routes}
 
 @app.post("/register")
 async def register_user(
