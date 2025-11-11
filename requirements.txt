@@ -10,3 +10,4 @@ pydantic
 dotenv
 fastapi_sessions
 gunicorn
+import certifi

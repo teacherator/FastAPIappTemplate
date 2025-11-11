@@ -7,6 +7,7 @@ from pwdlib import PasswordHash
 from dotenv import load_dotenv
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
+import certifi
 
 # FastAPI sessions imports (v0.3.2)
 from fastapi_sessions.backends.implementations import InMemoryBackend
@@ -19,7 +20,7 @@ MONGO_URI = os.environ.get("MONGODB_URL")
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
 
 # MongoDB setup
-client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(),server_api=ServerApi("1"))
 db = client.FastAPI
 user_col = db.get_collection("User_Info")
 
