@@ -11,3 +11,4 @@ dotenv
 fastapi_sessions
 gunicorn
 certifi
+re

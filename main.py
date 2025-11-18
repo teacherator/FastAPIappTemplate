@@ -13,6 +13,8 @@ import certifi
 from fastapi_sessions.backends.implementations import InMemoryBackend
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 from fastapi_sessions.session_verifier import SessionVerifier
+import re
+
 
 # Load env variables
 load_dotenv()
@@ -36,16 +38,14 @@ password_hash = PasswordHash.recommended()
 
 # User models
 class User(BaseModel):
-    username: str
     email: str | None = None
-    full_name: str | None = None
     disabled: bool | None = None
 
 class UserInDB(User):
     hashed_password: str
 
 class SessionData(BaseModel):
-    username: str
+    email: str
 
 # Session backend & cookie
 # Session backend & cookie
@@ -68,36 +68,35 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 # Routes
 
-"""
-@app.get("/")
-def read_root():
-    return {"message": "Hello World"}
-"""
 
 @app.get("/")
 async def root():
-    routes = [{"path": route.path, "name": route.name} for route in app.routes]
+    routes = [{"path": route.path, "email": route.email} for route in app.routes]
     return {"message": "API is running", "routes": routes}
 
 @app.post("/register")
 async def register_user(
-    username: Annotated[str, Form()],
     password: Annotated[str, Form()],
-    full_name: Annotated[str, Form()] = None,
     email: Annotated[str, Form()] = None,
     app_name: Annotated[str, Form()] = None,
-):
-    if user_col.find_one({"username": username}):
+):   
+
+    if user_col.find_one({"email": email}):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already exists"
+            detail="Email already exists"
+        )
+    match = re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email)
+   
+    if match == None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email format"
         )
 
     hashed_password = get_password_hash(password)
     user_col.insert_one({
-        "username": username,
         "hashed_password": hashed_password,
-        "full_name": full_name,
         "email": email,
         "disabled": False,
         "app": app_name
@@ -107,19 +106,19 @@ async def register_user(
 
 @app.post("/login")
 async def login(
-    username: Annotated[str, Form()],
+    email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     response: Response
 ):
-    user = user_col.find_one({"username": username})
+    user = user_col.find_one({"email": email})
     if not user or not verify_password(password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password"
+            detail="Incorrect email or password"
         )
 
     session_id = uuid4()
-    session_data = SessionData(username=username)
+    session_data = SessionData(email=email)
     await backend.create(session_id, session_data)
     cookie.attach_to_response(response, session_id)
 
@@ -152,7 +151,7 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
     async def verify_session(self, model: SessionData) -> bool:
         try:
             # Check MongoDB if user exists
-            return bool(user_col.find_one({"username": model.username}))
+            return bool(user_col.find_one({"email": model.email}))
         except Exception as e:
             print("Error in verify_session:", e)
             return False
@@ -165,7 +164,7 @@ async def read_current_user(
     session_id: UUID = Depends(cookie),            # read cookie
     session_data: SessionData = Depends(verifier), # verify it
 ):
-    return {"username": session_data.username}
+    return {"email": session_data.email}
 
 
 
