@@ -67,8 +67,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
 # Routes
-
-
 @app.get("/")
 async def root():
     routes = [{"path": route.path, "email": route.email} for route in app.routes]
@@ -79,7 +77,7 @@ async def register_user(
     password: Annotated[str, Form()],
     email: Annotated[str, Form()] = None,
     app_name: Annotated[str, Form()] = None,
-):   
+):
 
     if user_col.find_one({"email": email}):
         raise HTTPException(
@@ -138,7 +136,7 @@ cookie = SessionCookie(
 
 # --- Session Verifier ---
 class BasicVerifier(SessionVerifier[UUID, SessionData]):
-    identifier = "basic-cookie"  # ✅ match cookie identifier
+    identifier = "basic-cookie"
     auto_error = True
 
     def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
@@ -185,4 +183,31 @@ async def logout(
     return {"message": "Logged out successfully"}
 
 
+
+@app.post("/create_app")
+async def create_app(
+    password: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    response: Response
+):
+    user = user_col.find_one({"email": "admin"})
+    if not user or not verify_password(password, user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect password"
+        )
+    if user_col.find_one({"app": app_name}):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="App name already exists"
+        )
+    
+    temp_col = db.get_collection(app_name + "_User_Info")
+    temp_col.insert_one({
+        "app_name": app_name,
+    })
+
+    response.body = b'{"message": "Login successful"}'
+    response.media_type = "application/json"
+    return {"message": "App created successfully"}
 
