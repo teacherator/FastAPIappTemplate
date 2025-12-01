@@ -102,6 +102,10 @@ async def register_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid email format"
         )
+    
+    apps = db.get_collection("apps")
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
 
     hashed_password = get_password_hash(password)
     
@@ -130,6 +134,18 @@ async def register_user(
         "app": app_name,
         "type": level
     })
+
+    if app_name:
+        target_db = client[app_name]
+        collections = target_db.list_collection_names()
+
+        for col in collections:
+            if col in ["User_Info"]: 
+                continue  # skip system collections
+
+            collection = target_db[col]
+            collection.insert_one({"userId": email})
+
 
     return {"message": "User registered successfully"}
 
@@ -168,8 +184,11 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
     def backend(self):
         return self._backend
 
-    async def verify_session(self, session_id: UUID, model: SessionData) -> bool:
-        stored_session = await self.backend.read(session_id)
+    async def verify_session(self, model: SessionData) -> bool:
+        """
+        `model` is the SessionData returned by the backend.
+        """
+        stored_session = await self.backend.read(model.id)  # <-- include the session_id if needed
         if not stored_session:
             return False
         return stored_session.email == model.email
@@ -249,10 +268,8 @@ async def create_app(
     
     # Create the new database
     new_db = client[app_name]
-    info_collection = new_db["User_Info"]
+    new_db.create_collection("default_collection")  # optional default
 
-    # Inserting a document actually creates the DB
-    info_collection.insert_one({"app_name": app_name})
 
     return {"message": "App created successfully"}
 
@@ -268,6 +285,7 @@ async def add_collection(
 ):
     apps = db.get_collection("apps")
 
+    # Must be admin
     logged_in_user = user_col.find_one({"email": session_data.email})
     if not logged_in_user or logged_in_user.get("type") != "admin":
         raise HTTPException(403, "You must be logged in as an admin")
@@ -275,15 +293,249 @@ async def add_collection(
     if logged_in_user.get("app") != app_name:
         raise HTTPException(403, "You must be logged in to an admin account of this app")
 
-
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
+    # Create collection
     target_db = client[app_name]
     if collection_name in target_db.list_collection_names():
         raise HTTPException(400, "Collection already exists")
 
     target_db.create_collection(collection_name)
 
-    return {"message": "Collection added successfully"}
+    # Convert cursor → list
+    app_users = list(user_col.find({"app": app_name}))
+
+    # Default documents
+    objects = [{"userId": user["email"]} for user in app_users]
+
+    if objects:
+        collection = target_db[collection_name]
+        collection.insert_many(objects)
+
+    return {
+        "message": "Collection added and userId objects created successfully",
+        "objects_created": len(objects)
+    }
+
+
+
+@app.post("/delete_collection")
+async def delete_collection(
+    admin_password: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    collection_name: Annotated[str, Form()],
+    response: Response,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+
+    # Only admin of that app can delete collections
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be an admin of this app")
+
+    # Verify admin password
+    admin_user = user_col.find_one({"email": "admin"})
+    if not verify_password(admin_password, admin_user["hashed_password"]):
+        raise HTTPException(401, "Incorrect admin password")
+
+    # App must exist
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    # Target DB
+    target_db = client[app_name]
+
+    # Collection must exist
+    if collection_name not in target_db.list_collection_names():
+        raise HTTPException(404, "Collection does not exist")
+
+    # Drop it
+    target_db[collection_name].drop()
+
+    return {"message": "Collection deleted successfully"}
+
+@app.get("/list_collections")
+async def list_collections(
+    app_name: str,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+
+    # Only admin of that app can list collections
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be an admin of this app")
+
+    # App must exist
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    # Target DB
+    target_db = client[app_name]
+
+    collections = target_db.list_collection_names()
+
+    return {"collections": collections}
+
+
+@app.get("/apps")
+async def list_apps(
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+
+    app_list = list(apps.find({}, {"_id": 0}))
+
+    return {"apps": app_list}
+
+from fastapi import Form
+
+@app.post("/object")
+async def object(
+    app_name: Annotated[str, Form()],
+    collection_name: Annotated[str, Form()],
+    userId: Annotated[str, Form()],
+    obj: Annotated[str, Form()],      # JSON as string
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+
+    # Only admin of this app
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be an admin of this app")
+
+    # App must exist
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    # Select DB + collection
+    target_db = client[app_name]
+    if collection_name not in target_db.list_collection_names():
+        raise HTTPException(404, "Collection does not exist")
+
+    collection = target_db[collection_name]
+
+    # Parse JSON string into dict
+    import json
+    try:
+        obj_dict = json.loads(obj)
+    except:
+        raise HTTPException(400, "Invalid JSON in obj")
+
+    # See if user exists
+    existing = collection.find_one({"userId": userId})
+    if not existing:
+        raise HTTPException(404, "UserId not found in collection")
+
+    # Update (append / merge fields)
+    collection.update_one(
+        {"userId": userId},
+        {"$set": obj_dict}
+    )
+
+    return {"message": "Object merged into userId successfully"}
+
+@app.post("/delete_app")
+async def delete_app(
+    admin_password: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    response: Response,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+    
+    admin_user = user_col.find_one({"email": "admin"})
+    if not verify_password(admin_password, admin_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect admin password"
+        )
+    # Only admin of that app can delete it
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be logged in to an admin account of this app")
+
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    apps.delete_one({"app_name": app_name})
+    client.drop_database(app_name)
+    user_col.delete_many({"app": app_name})
+    
+    return {"message": "App and associated data deleted successfully"}
+
+
+@app.post("/delete_user")
+async def delete_user(
+    admin_password: Annotated[str, Form()],
+    email: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    response: Response,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+): 
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+    
+    admin_user = user_col.find_one({"email": "admin"})
+    if not verify_password(admin_password, admin_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect admin password"
+        )
+
+    # Only admin of that app can delete users
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be logged in to an admin account of this app")
+
+    if not re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email):
+        raise HTTPException(400, "Invalid email format")
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+    user = user_col.find_one({"email": email, "app": app_name})
+    if not user:
+        raise HTTPException(404, "User not found")
+    user_col.delete_one({"email": email, "app": app_name})
+    target_db = client[app_name]
+    collections = target_db.list_collection_names()
+    for col in collections:
+        if col in ["User_Info"]:
+            continue  # skip system collections
+        collection = target_db[col]
+        collection.delete_many({"userId": email})
+    
+    return {"message": "User and associated data deleted successfully"}
 
