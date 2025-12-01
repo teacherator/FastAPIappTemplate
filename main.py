@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import certifi
+import smtplib, ssl
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import random
 
 # FastAPI sessions imports (v0.3.2)
 from fastapi_sessions.backends.implementations import InMemoryBackend
@@ -126,7 +130,72 @@ async def register_user(
     else:
         level = "user"
 
+    sender_email = ""
+    receiver_email = ""
+    smtp_password = ""
 
+    # Example dynamic code
+    auth_code = random.randint(100000, 999999)
+
+    # Load HTML template
+    with open("email_template.html", "r") as f:
+        html_template = f.read()
+
+    # Replace placeholder with actual code
+    html_content = html_template.replace("{{code}}", str(auth_code))
+
+    # Plain text version (optional)
+    text_content = f"Hello,\nYour application authentication code is: {auth_code}"
+
+    # Build email
+    message = MIMEMultipart("alternative")
+    message["Subject"] = "Authentication Code"
+    message["From"] = sender_email
+    message["To"] = receiver_email
+
+    message.attach(MIMEText(text_content, "plain"))
+    message.attach(MIMEText(html_content, "html"))
+
+    # Send email
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        server.login(sender_email, smtp_password)
+        server.sendmail(sender_email, receiver_email, message.as_string())
+
+    # Save auth code and user info temporarily
+    filename = f"auth_code_{email.replace('@','_').replace('.','_')}.txt"
+    with open(filename, "w") as f:
+        f.write(f"{auth_code}\n{hashed_password}\n{app_name}\n{level}")
+
+    return {"message": "Verification code sent to email"}
+
+
+@app.post("/verify_email")
+async def verify_email(
+    email: Annotated[str, Form()],
+    code: Annotated[str, Form()],
+):
+    # Recompute filename based on email
+    filename = f"auth_code_{email.replace('@','_').replace('.','_')}.txt"
+
+    if not os.path.exists(filename):
+        raise HTTPException(404, "Verification file not found")
+
+    with open(filename, "r") as f:
+        lines = f.read().splitlines()
+
+    if len(lines) < 4:
+        raise HTTPException(400, "Verification file corrupted")
+
+    saved_code, hashed_password, app_name, level = lines
+
+    if code != saved_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code"
+        )
+
+    # Insert user into DB
     user_col.insert_one({
         "hashed_password": hashed_password,
         "email": email,
@@ -135,41 +204,22 @@ async def register_user(
         "type": level
     })
 
+    # Add user to app's collections
     if app_name:
         target_db = client[app_name]
         collections = target_db.list_collection_names()
 
         for col in collections:
-            if col in ["User_Info"]: 
-                continue  # skip system collections
+            if col in ["User_Info"]:
+                continue
 
             collection = target_db[col]
             collection.insert_one({"userId": email})
 
+    # Remove the temporary file after success
+    os.remove(filename)
 
     return {"message": "User registered successfully"}
-
-@app.post("/login")
-async def login(
-    email: Annotated[str, Form()],
-    password: Annotated[str, Form()],
-    response: Response
-):
-    user = user_col.find_one({"email": email})
-    if not user or not verify_password(password, user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
-        )
-
-    session_id = uuid4()
-    session_data = SessionData(email=email)
-    await backend.create(session_id, session_data)
-    cookie.attach_to_response(response, session_id)
-
-    response.body = b'{"message": "Login successful"}'
-    response.media_type = "application/json"
-    return {"message": "Login successful"}
 
 
 # --- Session Verifier ---
@@ -184,15 +234,11 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
     def backend(self):
         return self._backend
 
-    async def verify_session(self, model: SessionData) -> bool:
-        """
-        `model` is the SessionData returned by the backend.
-        """
-        stored_session = await self.backend.read(model.id)  # <-- include the session_id if needed
+    async def verify_session(self, session_id: UUID, model: SessionData) -> bool:
+        stored_session = await self.backend.read(session_id)
         if not stored_session:
             return False
         return stored_session.email == model.email
-
 
 verifier = BasicVerifier(backend=backend)
 
