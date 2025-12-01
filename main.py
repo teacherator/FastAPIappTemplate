@@ -539,3 +539,15 @@ async def delete_user(
     
     return {"message": "User and associated data deleted successfully"}
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+@app.on_event("startup")
+async def startup_event():
+    print("FastAPI app has started.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("FastAPI app is shutting down.")
+
