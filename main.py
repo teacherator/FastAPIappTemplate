@@ -1,3 +1,4 @@
+import email
 import os
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -121,8 +122,6 @@ async def register_user(
     password: Annotated[str, Form()],
     email: Annotated[str, Form()] = None,
     app_name: Annotated[str, Form()] = None,
-    account_type: Annotated[str, Form()] = None,
-    admin_password: Annotated[str, Form()] = None,
 ):
     if user_col.find_one({"email": email}):
         raise HTTPException(400, "Email already exists")
@@ -136,28 +135,15 @@ async def register_user(
         raise HTTPException(404, "App not found")
 
     hashed_password = get_password_hash(password)
-    
-    if account_type == "admin" and not app_name:
-        raise HTTPException(400, "Admin must specify an app")
 
-    # Admin verification
-    if account_type == "admin":
-        root_admin = user_col.find_one({"email": "admin"})
-        if not root_admin:
-            raise HTTPException(500, "Root admin account not found")
-        if not admin_password or not verify_password(admin_password, root_admin["hashed_password"]):
-            raise HTTPException(401, "Incorrect admin password")
-        level = "admin"
-    else:
-        level = "user"
 
     # Generate 6-digit email code
     auth_code = random.randint(100000, 999999)
 
     # Send email (unchanged)
-    sender_email = ""
-    receiver_email = ""
-    smtp_password = ""
+    sender_email = os.environ.get("SMTP_EMAIL")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    receiver_email = email
 
     with open("email_template.html") as f:
         html_template = f.read()
@@ -183,7 +169,7 @@ async def register_user(
         "auth_code": str(auth_code),
         "hashed_password": hashed_password,
         "app_name": app_name,
-        "level": level,
+        "level": "user",
         "created_at": datetime.utcnow()        # TTL cleanup
     })
 
@@ -306,8 +292,8 @@ async def create_app(
     apps = db.get_collection("apps")
 
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
     
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
@@ -347,13 +333,13 @@ async def add_collection(
 ):
     apps = db.get_collection("apps")
 
-    # Must be admin
+    # Must be developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
     
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an admin account of this app")
+        raise HTTPException(403, "You must be logged in to an developer account of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
@@ -393,14 +379,14 @@ async def delete_collection(
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only admin of that app can delete collections
+    # Only developer of that app can delete collections
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an admin of this app")
+        raise HTTPException(403, "You must be an developer of this app")
 
     # Verify admin password
     admin_user = user_col.find_one({"email": "admin"})
@@ -431,14 +417,14 @@ async def list_collections(
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only admin of that app can list collections
+    # Only developer of that app can list collections
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an admin of this app")
+        raise HTTPException(403, "You must be an developer of this app")
 
     # App must exist
     if not apps.find_one({"app_name": app_name}):
@@ -459,10 +445,10 @@ async def list_apps(
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
 
     app_list = list(apps.find({}, {"_id": 0}))
 
@@ -480,14 +466,14 @@ async def update_object(
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only admin of this app
+    # Only developer of this app
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an admin of this app")
+        raise HTTPException(403, "You must be an developer of this app")
 
     # App must exist
     if not apps.find_one({"app_name": app_name}):
@@ -532,8 +518,8 @@ async def delete_app(
 
     # Must be logged in as admin
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
     
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
@@ -541,9 +527,9 @@ async def delete_app(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect admin password"
         )
-    # Only admin of that app can delete it
+    # Only developer of that app can delete it
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an admin account of this app")
+        raise HTTPException(403, "You must be logged in to an developer account of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
@@ -566,10 +552,10 @@ async def delete_user(
 ): 
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
     
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
@@ -578,9 +564,9 @@ async def delete_user(
             detail="Incorrect admin password"
         )
 
-    # Only admin of that app can delete users
+    # Only developer of that app can delete users
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an admin account of this app")
+        raise HTTPException(403, "You must be logged in to an developer account of this app")
 
     if not re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email):
         raise HTTPException(400, "Invalid email format")
@@ -626,9 +612,9 @@ async def reset_password(
     auth_code = random.randint(100000, 999999)
 
     # Send email (unchanged)
-    sender_email = ""
-    receiver_email = ""
-    smtp_password = ""
+    sender_email = os.environ.get("SMTP_EMAIL")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    receiver_email = email
 
     with open("email_template.html") as f:
         html_template = f.read()
@@ -688,17 +674,16 @@ async def confirm_reset_password(
 async def transfer_app_ownership(
     admin_password: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
-    new_admin_email: Annotated[str, Form()],
+    new_developer_email: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
+    # Must be logged in as developer
     logged_in_user = user_col.find_one({"email": session_data.email})
-    if not logged_in_user or logged_in_user.get("type") != "admin":
-        raise HTTPException(403, "You must be logged in as an admin")
+    if not logged_in_user or logged_in_user.get("type") != "developer":
+        raise HTTPException(403, "You must be logged in as an developer")
     
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
@@ -706,16 +691,16 @@ async def transfer_app_ownership(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect admin password"
         )
-    # Only admin of that app can transfer ownership
+    # Only developer of that app can transfer ownership
     if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an admin account of this app")
+        raise HTTPException(403, "You must be logged in to an developer account of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    new_admin = user_col.find_one({"email": new_admin_email, "app": app_name})
-    if not new_admin:
-        raise HTTPException(404, "New admin user not found in this app")
+    new_developer = user_col.find_one({"email": new_developer_email, "app": app_name})
+    if not new_developer:
+        raise HTTPException(404, "New developer user not found in this app")
 
     # Update roles
     user_col.update_one(
@@ -723,8 +708,8 @@ async def transfer_app_ownership(
         {"$set": {"type": "user"}}
     )
     user_col.update_one(
-        {"email": new_admin_email},
-        {"$set": {"type": "admin"}}
+        {"email": new_developer_email},
+        {"$set": {"type": "developer"}}
     )
 
     return {"message": "App ownership transferred successfully"}
@@ -737,10 +722,10 @@ async def admin_dashboard(
     session_id: UUID = Depends(cookie),
     session_data: SessionData = Depends(verifier)
 ):
-    # Ensure admin access
+    # Ensure developer access
     user = user_col.find_one({"email": session_data.email})
-    if not user or user.get("type") != "admin":
-        raise HTTPException(403, "Admins only")
+    if not user or user.get("type") != "developer":
+        raise HTTPException(403, "Developers only")
 
     # Fetch data
     apps = list(db.get_collection("apps").find({}, {"_id": 0}))
@@ -759,6 +744,42 @@ async def admin_dashboard(
 
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
-        "admin_email": session_data.email,
+        "developer_email": session_data.email,
         "app_stats": app_stats
     })
+
+@app.post("/change_user_type")
+async def change_user_type(
+    admin_password: Annotated[str, Form()],
+    target_email: Annotated[str, Form()],
+    new_type: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    response: Response,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+    
+    admin_user = user_col.find_one({"email": "admin"})
+    if not verify_password(admin_password, admin_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect admin password"
+        )
+
+    if new_type not in ["admin", "user", "developer"]:
+        raise HTTPException(400, "Invalid user type")
+
+    target_user = user_col.find_one({"email": target_email, "app": app_name})
+    if not target_user:
+        raise HTTPException(404, "Target user not found in this app")
+
+    user_col.update_one(
+        {"email": target_email, "app": app_name},
+        {"$set": {"type": new_type}}
+    )
+
+    return {"message": "User type updated successfully"}
