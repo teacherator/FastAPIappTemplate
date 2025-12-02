@@ -790,3 +790,4 @@ async def change_user_type(
     )
 
     return {"message": "User type updated successfully"}
+
