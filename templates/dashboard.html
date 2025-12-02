@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <style>
+        table {border-collapse: collapse; width: 50%;}
+        th, td {border: 1px solid #ccc; padding: 8px; text-align: left;}
+    </style>
+</head>
+<body>
+    <h1>Welcome, {{ admin_email }}</h1>
+    <h2>App Statistics</h2>
+    <table>
+        <tr>
+            <th>App Name</th>
+            <th>Users</th>
+            <th>Collections</th>
+        </tr>
+        {% for app in app_stats %}
+        <tr>
+            <td>{{ app.app_name }}</td>
+            <td>{{ app.users }}</td>
+            <td>{{ app.collections }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

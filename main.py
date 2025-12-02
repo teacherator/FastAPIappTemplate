@@ -19,11 +19,18 @@ from fastapi_sessions.frontends.implementations import SessionCookie, CookiePara
 from fastapi_sessions.session_verifier import SessionVerifier
 import re
 from fastapi import Form
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
+
+
 
 # Load env variables
 load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
+
+
+templates = Jinja2Templates(directory="templates")
 
 
 # MongoDB setup
@@ -227,6 +234,9 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
     def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
         self._backend = backend
     
+    @property
+    def backend(self) -> InMemoryBackend[UUID, SessionData]:
+        return self._backend
     
     @property
     def auth_http_exception(self) -> HTTPException:
@@ -235,12 +245,15 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
             detail="Invalid or expired session",
         )
 
-
-    async def verify_session(self, session_id: UUID, model: SessionData) -> bool:
-        stored = await self.backend.read(session_id)
+    async def verify_session(self, model: SessionData) -> bool:
+        """
+        Verify that the session is valid.
+        """
+        stored = await self.backend.read(model.session_id)
         if not stored:
             return False
         return stored.email == model.email
+
 
 
 verifier = BasicVerifier(backend=backend)
@@ -715,3 +728,37 @@ async def transfer_app_ownership(
     )
 
     return {"message": "App ownership transferred successfully"}
+
+
+
+@app.get("/admin/dashboard")
+async def admin_dashboard(
+    request: Request,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    # Ensure admin access
+    user = user_col.find_one({"email": session_data.email})
+    if not user or user.get("type") != "admin":
+        raise HTTPException(403, "Admins only")
+
+    # Fetch data
+    apps = list(db.get_collection("apps").find({}, {"_id": 0}))
+    
+    # Example stats per app
+    app_stats = []
+    for app in apps:
+        app_name = app["app_name"]
+        users_count = user_col.count_documents({"app": app_name})
+        collections_count = len(client[app_name].list_collection_names())
+        app_stats.append({
+            "app_name": app_name,
+            "users": users_count,
+            "collections": collections_count
+        })
+
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "admin_email": session_data.email,
+        "app_stats": app_stats
+    })
