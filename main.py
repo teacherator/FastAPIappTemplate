@@ -18,7 +18,7 @@ from fastapi_sessions.backends.implementations import InMemoryBackend
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 from fastapi_sessions.session_verifier import SessionVerifier
 import re
-
+from fastapi import Form
 
 # Load env variables
 load_dotenv()
@@ -57,6 +57,7 @@ class UserInDB(User):
 
 class SessionData(BaseModel):
     email: str
+    session_id: UUID | None = None
 
 # Session backend & cookie
 cookie_params = CookieParameters(
@@ -102,11 +103,9 @@ async def login(
     if not user or not verify_password(password, user["hashed_password"]):
         raise HTTPException( status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
     session_id = uuid4()
-    session_data = SessionData(email=email)
+    session_data = SessionData(email=email, session_id=session_id)
     await backend.create(session_id, session_data)
     cookie.attach_to_response(response, session_id)
-    response.body = b'{"message": "Login successful"}'
-    response.media_type = "application/json"
     return {"message": "Login successful"}
 
 
@@ -130,6 +129,9 @@ async def register_user(
         raise HTTPException(404, "App not found")
 
     hashed_password = get_password_hash(password)
+    
+    if account_type == "admin" and not app_name:
+        raise HTTPException(400, "Admin must specify an app")
 
     # Admin verification
     if account_type == "admin":
@@ -221,7 +223,6 @@ async def verify_email(
 class BasicVerifier(SessionVerifier[UUID, SessionData]):
     identifier = "basic-cookie"
     auto_error = True
-    backend = backend
 
     def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
         self._backend = backend
@@ -234,18 +235,13 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
             detail="Invalid or expired session",
         )
 
-    async def verify_session(self, model: SessionData) -> bool:
-        # FastAPI Sessions gives us model from the cookie,
-        # but NOT the session_id. We must extract it.
-        session_id = model.session_id if hasattr(model, "session_id") else None
-        if not session_id:
-            return False
 
-        stored_session = await self.backend.read(session_id)
-        if not stored_session:
+    async def verify_session(self, session_id: UUID, model: SessionData) -> bool:
+        stored = await self.backend.read(session_id)
+        if not stored:
             return False
+        return stored.email == model.email
 
-        return stored_session.email == model.email
 
 verifier = BasicVerifier(backend=backend)
 
@@ -459,16 +455,15 @@ async def list_apps(
 
     return {"apps": app_list}
 
-from fastapi import Form
 
-@app.post("/object")
-async def object(
+@app.post("/update_object")
+async def update_object(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     userId: Annotated[str, Form()],
     obj: Annotated[str, Form()],      # JSON as string
     session_id: UUID = Depends(cookie),
-    session_data: SessionData = Depends(verifier)
+    session_data: SessionData = Depends(verifier),
 ):
     apps = db.get_collection("apps")
 
@@ -606,3 +601,117 @@ async def shutdown_event():
 
 
 
+@app.post("/reset_password")
+async def reset_password(
+    email: Annotated[str, Form()],
+):
+    user = user_col.find_one({"email": email})
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+        # Generate 6-digit email code
+    auth_code = random.randint(100000, 999999)
+
+    # Send email (unchanged)
+    sender_email = ""
+    receiver_email = ""
+    smtp_password = ""
+
+    with open("email_template.html") as f:
+        html_template = f.read()
+
+    html_content = html_template.replace("{{code}}", str(auth_code))
+    text_content = f"Your authentication code is: {auth_code}"
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Authentication Code"
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        server.login(sender_email, smtp_password)
+        server.sendmail(sender_email, receiver_email, msg.as_string())
+
+    # Store the verification info securely in MongoDB
+    verification_col.insert_one({
+        "email": email,
+        "auth_code": str(auth_code),
+        "created_at": datetime.utcnow()        # TTL cleanup
+    })
+
+    return {"message": "Verification code sent"}
+    
+    
+@app.post("/confirm_reset_password")
+async def confirm_reset_password(
+    email: Annotated[str, Form()],
+    code: Annotated[str, Form()],
+    new_password: Annotated[str, Form()],
+):
+    record = verification_col.find_one({"email": email})
+
+    if not record:
+        raise HTTPException(404, "Verification code expired or not found")
+
+    if record["auth_code"] != code:
+        raise HTTPException(400, "Invalid verification code")
+
+    # Update password in user database
+    hashed_password = get_password_hash(new_password)
+    user_col.update_one(
+        {"email": email},
+        {"$set": {"hashed_password": hashed_password}}
+    )
+
+    # Remove verification record
+    verification_col.delete_one({"email": email})
+
+    return {"message": "Password reset successfully"}
+
+@app.post("/transfer_app_ownership")
+async def transfer_app_ownership(
+    admin_password: Annotated[str, Form()],
+    app_name: Annotated[str, Form()],
+    new_admin_email: Annotated[str, Form()],
+    response: Response,
+    session_id: UUID = Depends(cookie),
+    session_data: SessionData = Depends(verifier)
+):
+    apps = db.get_collection("apps")
+
+    # Must be logged in as admin
+    logged_in_user = user_col.find_one({"email": session_data.email})
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(403, "You must be logged in as an admin")
+    
+    admin_user = user_col.find_one({"email": "admin"})
+    if not verify_password(admin_password, admin_user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect admin password"
+        )
+    # Only admin of that app can transfer ownership
+    if logged_in_user.get("app") != app_name:
+        raise HTTPException(403, "You must be logged in to an admin account of this app")
+
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    new_admin = user_col.find_one({"email": new_admin_email, "app": app_name})
+    if not new_admin:
+        raise HTTPException(404, "New admin user not found in this app")
+
+    # Update roles
+    user_col.update_one(
+        {"email": session_data.email},
+        {"$set": {"type": "user"}}
+    )
+    user_col.update_one(
+        {"email": new_admin_email},
+        {"$set": {"type": "admin"}}
+    )
+
+    return {"message": "App ownership transferred successfully"}
