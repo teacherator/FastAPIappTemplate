@@ -14,9 +14,6 @@ from email.mime.multipart import MIMEMultipart
 import random
 import glob
 from datetime import datetime
-
-
-# FastAPI sessions imports (v0.3.2)
 from fastapi_sessions.backends.implementations import InMemoryBackend
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 from fastapi_sessions.session_verifier import SessionVerifier
@@ -27,7 +24,6 @@ import re
 load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
-
 
 
 # MongoDB setup
@@ -150,9 +146,9 @@ async def register_user(
     auth_code = random.randint(100000, 999999)
 
     # Send email (unchanged)
-    sender_email = "avilubick@gmail.com"
-    receiver_email = "avilubick@gmail.com"
-    smtp_password = "wrpebxppzqugksms"
+    sender_email = ""
+    receiver_email = ""
+    smtp_password = ""
 
     with open("email_template.html") as f:
         html_template = f.read()
