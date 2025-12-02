@@ -12,6 +12,9 @@ import smtplib, ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
+import glob
+from datetime import datetime
+
 
 # FastAPI sessions imports (v0.3.2)
 from fastapi_sessions.backends.implementations import InMemoryBackend
@@ -25,10 +28,18 @@ load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
 
+
+
 # MongoDB setup
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(),server_api=ServerApi("1"))
 db = client.FastAPI
 user_col = db.get_collection("User_Info")
+
+verification_col = db.get_collection("email_verification")
+
+# Create TTL index: delete verification entries after 10 minutes
+verification_col.create_index("created_at", expireAfterSeconds=600)
+
 
 try:
     client.admin.command('ping')
@@ -85,6 +96,24 @@ async def root():
     routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
     return {"message": "API is running", "routes": routes}
 
+@app.post("/login")
+async def login(
+    email: Annotated[str, Form()],
+    password: Annotated[str, Form()],
+    response: Response
+    ):
+    user = user_col.find_one({"email": email})
+    if not user or not verify_password(password, user["hashed_password"]):
+        raise HTTPException( status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
+    session_id = uuid4()
+    session_data = SessionData(email=email)
+    await backend.create(session_id, session_data)
+    cookie.attach_to_response(response, session_id)
+    response.body = b'{"message": "Login successful"}'
+    response.media_type = "application/json"
+    return {"message": "Login successful"}
+
+
 @app.post("/register")
 async def register_user(
     password: Annotated[str, Form()],
@@ -93,81 +122,67 @@ async def register_user(
     account_type: Annotated[str, Form()] = None,
     admin_password: Annotated[str, Form()] = None,
 ):
-
     if user_col.find_one({"email": email}):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already exists"
-        )
+        raise HTTPException(400, "Email already exists")
+
     match = re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email)
-   
-    if match == None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email format"
-        )
-    
+    if not match:
+        raise HTTPException(400, "Invalid email format")
+
     apps = db.get_collection("apps")
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
     hashed_password = get_password_hash(password)
-    
+
+    # Admin verification
     if account_type == "admin":
-        # Must verify against the ONE account named "admin"
         root_admin = user_col.find_one({"email": "admin"})
         if not root_admin:
             raise HTTPException(500, "Root admin account not found")
-
-        if not admin_password:
-            raise HTTPException(401, "Admin password required")
-
-        if not verify_password(admin_password, root_admin["hashed_password"]):
+        if not admin_password or not verify_password(admin_password, root_admin["hashed_password"]):
             raise HTTPException(401, "Incorrect admin password")
-
         level = "admin"
-
     else:
         level = "user"
 
-    sender_email = ""
-    receiver_email = ""
-    smtp_password = ""
-
-    # Example dynamic code
+    # Generate 6-digit email code
     auth_code = random.randint(100000, 999999)
 
-    # Load HTML template
-    with open("email_template.html", "r") as f:
+    # Send email (unchanged)
+    sender_email = "avilubick@gmail.com"
+    receiver_email = "avilubick@gmail.com"
+    smtp_password = "wrpebxppzqugksms"
+
+    with open("email_template.html") as f:
         html_template = f.read()
 
-    # Replace placeholder with actual code
     html_content = html_template.replace("{{code}}", str(auth_code))
+    text_content = f"Your authentication code is: {auth_code}"
 
-    # Plain text version (optional)
-    text_content = f"Hello,\nYour application authentication code is: {auth_code}"
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Authentication Code"
+    msg["From"] = sender_email
+    msg["To"] = receiver_email
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
 
-    # Build email
-    message = MIMEMultipart("alternative")
-    message["Subject"] = "Authentication Code"
-    message["From"] = sender_email
-    message["To"] = receiver_email
-
-    message.attach(MIMEText(text_content, "plain"))
-    message.attach(MIMEText(html_content, "html"))
-
-    # Send email
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
         server.login(sender_email, smtp_password)
-        server.sendmail(sender_email, receiver_email, message.as_string())
+        server.sendmail(sender_email, receiver_email, msg.as_string())
 
-    # Save auth code and user info temporarily
-    filename = f"auth_code_{email.replace('@','_').replace('.','_')}.txt"
-    with open(filename, "w") as f:
-        f.write(f"{auth_code}\n{hashed_password}\n{app_name}\n{level}")
+    # Store the verification info securely in MongoDB
+    verification_col.insert_one({
+        "email": email,
+        "auth_code": str(auth_code),
+        "hashed_password": hashed_password,
+        "app_name": app_name,
+        "level": level,
+        "created_at": datetime.utcnow()        # TTL cleanup
+    })
 
-    return {"message": "Verification code sent to email"}
+    return {"message": "Verification code sent"}
 
 
 @app.post("/verify_email")
@@ -175,69 +190,65 @@ async def verify_email(
     email: Annotated[str, Form()],
     code: Annotated[str, Form()],
 ):
-    # Recompute filename based on email
-    filename = f"auth_code_{email.replace('@','_').replace('.','_')}.txt"
+    record = verification_col.find_one({"email": email})
 
-    if not os.path.exists(filename):
-        raise HTTPException(404, "Verification file not found")
+    if not record:
+        raise HTTPException(404, "Verification code expired or not found")
 
-    with open(filename, "r") as f:
-        lines = f.read().splitlines()
+    if record["auth_code"] != code:
+        raise HTTPException(400, "Invalid verification code")
 
-    if len(lines) < 4:
-        raise HTTPException(400, "Verification file corrupted")
-
-    saved_code, hashed_password, app_name, level = lines
-
-    if code != saved_code:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid verification code"
-        )
-
-    # Insert user into DB
+    # Insert into user database
     user_col.insert_one({
-        "hashed_password": hashed_password,
+        "hashed_password": record["hashed_password"],
         "email": email,
         "disabled": False,
-        "app": app_name,
-        "type": level
+        "app": record["app_name"],
+        "type": record["level"]
     })
 
-    # Add user to app's collections
-    if app_name:
-        target_db = client[app_name]
-        collections = target_db.list_collection_names()
+    # Add user to app collections
+    target_db = client[record["app_name"]]
+    for col in target_db.list_collection_names():
+        if col == "User_Info":
+            continue
+        target_db[col].insert_one({"userId": email})
 
-        for col in collections:
-            if col in ["User_Info"]:
-                continue
-
-            collection = target_db[col]
-            collection.insert_one({"userId": email})
-
-    # Remove the temporary file after success
-    os.remove(filename)
+    # Remove verification record
+    verification_col.delete_one({"email": email})
 
     return {"message": "User registered successfully"}
 
 
+    
 # --- Session Verifier ---
 class BasicVerifier(SessionVerifier[UUID, SessionData]):
     identifier = "basic-cookie"
     auto_error = True
+    backend = backend
 
     def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
         self._backend = backend
-
+    
+    
     @property
-    def backend(self):
-        return self._backend
+    def auth_http_exception(self) -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        )
 
-    async def verify_session(self, session_id: UUID, model: SessionData) -> bool:
+    async def verify_session(self, model: SessionData) -> bool:
+        # FastAPI Sessions gives us model from the cookie,
+        # but NOT the session_id. We must extract it.
+        session_id = model.session_id if hasattr(model, "session_id") else None
+        if not session_id:
+            return False
+
         stored_session = await self.backend.read(session_id)
         if not stored_session:
             return False
+
         return stored_session.email == model.email
 
 verifier = BasicVerifier(backend=backend)
@@ -596,4 +607,6 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     print("FastAPI app is shutting down.")
+
+
 
