@@ -70,7 +70,7 @@ class SessionData(BaseModel):
 # Session backend & cookie
 cookie_params = CookieParameters(
     cookie_path="/",
-    secure=True,      # set to True if using HTTPS
+    secure=False,      # set to True if using HTTPS
     httponly=True,
     samesite="lax"
 )
@@ -191,11 +191,11 @@ async def verify_email(
 
     # Insert into user database
     user_col.insert_one({
-        "hashed_password": record["hashed_password"],
-        "email": email,
-        "disabled": False,
-        "app": record["app_name"],
-        "type": record["level"]
+    "hashed_password": record["hashed_password"],
+    "email": email,
+    "disabled": False,
+    "apps": [record["app_name"]],  # <-- list of apps
+    "type": record["level"]
     })
 
     # Add user to app collections
@@ -309,10 +309,10 @@ async def create_app(
             detail="App name already exists"
         )
     
-    apps.insert_one({
-        "app_name": app_name,
-        "created_by": session_data.email
-    })
+    user_col.update_one(
+    {"email": session_data.email},
+    {"$push": {"apps": app_name}}
+    )
     
     # Create the new database
     new_db = client[app_name]
@@ -338,8 +338,8 @@ async def add_collection(
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
     
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an developer account of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
@@ -385,8 +385,8 @@ async def delete_collection(
         raise HTTPException(403, "You must be logged in as an developer")
 
     # Only developer of that app can delete collections
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an developer of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     # Verify admin password
     admin_user = user_col.find_one({"email": "admin"})
@@ -423,8 +423,8 @@ async def list_collections(
         raise HTTPException(403, "You must be logged in as an developer")
 
     # Only developer of that app can list collections
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an developer of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     # App must exist
     if not apps.find_one({"app_name": app_name}):
@@ -472,8 +472,8 @@ async def update_object(
         raise HTTPException(403, "You must be logged in as an developer")
 
     # Only developer of this app
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be an developer of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     # App must exist
     if not apps.find_one({"app_name": app_name}):
@@ -528,8 +528,8 @@ async def delete_app(
             detail="Incorrect admin password"
         )
     # Only developer of that app can delete it
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an developer account of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
@@ -565,8 +565,8 @@ async def delete_user(
         )
 
     # Only developer of that app can delete users
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an developer account of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     if not re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email):
         raise HTTPException(400, "Invalid email format")
@@ -692,8 +692,8 @@ async def transfer_app_ownership(
             detail="Incorrect admin password"
         )
     # Only developer of that app can transfer ownership
-    if logged_in_user.get("app") != app_name:
-        raise HTTPException(403, "You must be logged in to an developer account of this app")
+    if app_name not in logged_in_user.get("apps", []):
+        raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
@@ -703,14 +703,18 @@ async def transfer_app_ownership(
         raise HTTPException(404, "New developer user not found in this app")
 
     # Update roles
+    # Remove app from current developer
     user_col.update_one(
         {"email": session_data.email},
-        {"$set": {"type": "user"}}
+        {"$pull": {"apps": app_name}}
     )
+
+    # Add app to new developer
     user_col.update_one(
         {"email": new_developer_email},
-        {"$set": {"type": "developer"}}
+        {"$addToSet": {"apps": app_name}}  # prevents duplicates
     )
+
 
     return {"message": "App ownership transferred successfully"}
 
