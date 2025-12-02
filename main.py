@@ -148,6 +148,7 @@ async def register_user(
         html_template = f.read()
 
     html_content = html_template.replace("{{code}}", str(auth_code))
+    html_content = html_content.replace("{{app_name}}", app_name)
     text_content = f"Your authentication code is: {auth_code}"
 
     msg = MIMEMultipart("alternative")
@@ -615,10 +616,13 @@ async def reset_password(
     smtp_password = os.environ.get("SMTP_PASSWORD")
     receiver_email = email
 
+    app_name = user.get("apps", [None])[0]  # Get first app or None
+
     with open("email_template.html") as f:
         html_template = f.read()
 
     html_content = html_template.replace("{{code}}", str(auth_code))
+    html_content = html_template.replace("{{app_name}}", app_name)
     text_content = f"Your authentication code is: {auth_code}"
 
     msg = MIMEMultipart("alternative")
