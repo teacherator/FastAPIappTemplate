@@ -113,7 +113,10 @@ async def login(
     session_data = SessionData(email=email, session_id=session_id)
     await backend.create(session_id, session_data)
     cookie.attach_to_response(response, session_id)
-    return {"message": "Login successful"}
+    response.media_type = "application/json"
+    response.body = b'{"message": "Login successful"}'
+    return response
+
 
 
 @app.post("/register")
