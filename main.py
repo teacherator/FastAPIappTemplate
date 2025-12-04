@@ -61,6 +61,7 @@ password_hash = PasswordHash.recommended()
 
 app.add_middleware(
     CORSMiddleware,
+    cookie_path="/",
     allow_origins=["https://sizebud.com/"],  # replace with your frontend URL
     allow_credentials=True,  # required to send cookies
     allow_methods=["*"],
