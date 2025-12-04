@@ -83,7 +83,7 @@ class SessionData(BaseModel):
 # Session backend & cookie
 cookie_params = CookieParameters(
     cookie_path="/",
-    secure=False,      # set to True if using HTTPS
+    secure=True,      # set to True if using HTTPS
     httponly=True,
     samesite="lax"
 )
