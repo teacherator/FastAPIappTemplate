@@ -85,7 +85,8 @@ cookie_params = CookieParameters(
     cookie_path="/",
     secure=True,      # set to True if using HTTPS
     httponly=False,
-    samesite="lax"
+    samesite="lax",
+    domain=".sizebud.com"
 )
 
 backend = InMemoryBackend[UUID, SessionData]()  # In-memory for now
