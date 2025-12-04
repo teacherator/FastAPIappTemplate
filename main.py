@@ -22,7 +22,7 @@ import re
 from fastapi import Form
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
-
+from fastapi.middleware.cors import CORSMiddleware
 
 
 # Load env variables
@@ -32,6 +32,9 @@ SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
 
 
 templates = Jinja2Templates(directory="templates")
+
+
+
 
 
 # MongoDB setup
@@ -54,6 +57,16 @@ except Exception as e:
 # FastAPI setup
 app = FastAPI()
 password_hash = PasswordHash.recommended()
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # replace with your frontend URL
+    allow_credentials=True,  # required to send cookies
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # User models
 class User(BaseModel):
