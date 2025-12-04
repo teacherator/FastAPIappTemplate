@@ -3,6 +3,7 @@ import os
 from typing import Annotated
 from uuid import UUID, uuid4
 from fastapi import FastAPI, Depends, HTTPException, status, Form, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pwdlib import PasswordHash
 from dotenv import load_dotenv
@@ -113,9 +114,8 @@ async def login(
     session_data = SessionData(email=email, session_id=session_id)
     await backend.create(session_id, session_data)
     cookie.attach_to_response(response, session_id)
-    response.media_type = "application/json"
-    response.body = b'{"message": "Login successful"}'
-    return response
+
+    return JSONResponse({"message": "Login successful"})
 
 
 
