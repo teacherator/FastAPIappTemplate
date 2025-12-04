@@ -61,7 +61,7 @@ password_hash = PasswordHash.recommended()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # replace with your frontend URL
+    allow_origins=["https://fastapi-template-app-entxr.ondigitalocean.app/"],  # replace with your frontend URL
     allow_credentials=True,  # required to send cookies
     allow_methods=["*"],
     allow_headers=["*"],
