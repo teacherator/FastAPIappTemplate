@@ -61,7 +61,7 @@ password_hash = PasswordHash.recommended()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://sizebud.com"],  # replace with your frontend URL
+    allow_origins=["https://sizebud.com", "https://fastapi-template-app-entxr.ondigitalocean.app"],  # replace with your frontend URL
     allow_credentials=True,  # required to send cookies
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,13 +81,32 @@ class SessionData(BaseModel):
     session_id: UUID | None = None
 
 # Session backend & cookie
-cookie_params = CookieParameters(
-    cookie_path="/",
-    secure=True,      # set to True if using HTTPS
-    httponly=False,
-    samesite="lax",
-    domain=".sizebud.com"
+cookie_sizebud = SessionCookie(
+    cookie_name="fastapi_session",
+    identifier="basic-cookie",
+    secret_key=SESSION_SECRET_KEY,
+    cookie_params=CookieParameters(
+        domain=".sizebud.com",
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    ),
 )
+
+cookie_do = SessionCookie(
+    cookie_name="fastapi_session",
+    identifier="basic-cookie",
+    secret_key=SESSION_SECRET_KEY,
+    cookie_params=CookieParameters(
+        domain=".ondigitalocean.app",
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    ),
+)
+
 
 backend = InMemoryBackend[UUID, SessionData]()  # In-memory for now
 
@@ -99,14 +118,14 @@ def get_password_hash(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
-# --- Session Cookie ---
-cookie = SessionCookie(
-    cookie_name="fastapi_session",
-    identifier="basic-cookie",   # must match verifier
-    auto_error=True,
-    secret_key=SESSION_SECRET_KEY,
-    cookie_params=cookie_params,
-)
+
+async def get_session_id(
+    sizebud: UUID | None = Depends(cookie_sizebud),
+    do: UUID | None = Depends(cookie_do),
+):
+    if not sizebud and not do:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return sizebud or do
 
 
 # Routes
@@ -127,8 +146,8 @@ async def login(
     session_id = uuid4()
     session_data = SessionData(email=email, session_id=session_id)
     await backend.create(session_id, session_data)
-    cookie.attach_to_response(response, session_id)
-
+    cookie_sizebud.attach_to_response(response, session_id)
+    cookie_do.attach_to_response(response, session_id)
     return JSONResponse({"message": "Login successful"})
 
 
@@ -236,26 +255,23 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
 
     def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
         self._backend = backend
-    
+
     @property
-    def backend(self) -> InMemoryBackend[UUID, SessionData]:
+    def backend(self):
         return self._backend
-    
+
     @property
-    def auth_http_exception(self) -> HTTPException:
+    def auth_http_exception(self):
         return HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired session",
         )
 
-    async def verify_session(self, model: SessionData) -> bool:
-        """
-        Verify that the session is valid.
-        """
-        stored = await self.backend.read(model.session_id)
-        if not stored:
-            return False
-        return stored.email == model.email
+    async def verify_session(self, session_id: UUID) -> SessionData:
+        session = await self.backend.read(session_id)
+        if not session:
+            raise self.auth_http_exception
+        return session
 
 
 
@@ -263,39 +279,22 @@ verifier = BasicVerifier(backend=backend)
 
 # --- /me route ---
 @app.get("/me")
-async def read_current_user(
-    session_id: UUID = Depends(cookie),
+async def me(
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier),
 ):
-    user = user_col.find_one({"email": session_data.email})
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-    return {
-        "email": session_data.email,
-        "type": user.get("type", "user")
-    }
+    return {"email": session_data.email}
 
 
 @app.post("/logout")
 async def logout(
     response: Response,
-    session_id: UUID = Depends(cookie)
+    session_id: UUID = Depends(get_session_id),
 ):
-    # Delete the session from the backend (if it exists)
-    try:
-        await backend.delete(session_id)
-    except KeyError:
-        pass  # session already deleted or invalid
-
-    # Remove the cookie from the client
-    cookie.delete_from_response(response)
-
-    return {"message": "Logged out successfully"}
+    await backend.delete(session_id)
+    cookie_sizebud.delete_from_response(response)
+    cookie_do.delete_from_response(response)
+    return {"message": "Logged out"}
 
 
 @app.post("/create_app")
@@ -303,7 +302,7 @@ async def create_app(
     admin_password: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -345,7 +344,7 @@ async def add_collection(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -391,7 +390,7 @@ async def delete_collection(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -429,7 +428,7 @@ async def delete_collection(
 @app.get("/list_collections")
 async def list_collections(
     app_name: str,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -457,7 +456,7 @@ async def list_collections(
 
 @app.get("/apps")
 async def list_apps(
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -478,7 +477,7 @@ async def update_object(
     collection_name: Annotated[str, Form()],
     userId: Annotated[str, Form()],
     obj: Annotated[str, Form()],      # JSON as string
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier),
 ):
     apps = db.get_collection("apps")
@@ -528,7 +527,7 @@ async def delete_app(
     admin_password: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     apps = db.get_collection("apps")
@@ -564,7 +563,7 @@ async def delete_user(
     email: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ): 
     apps = db.get_collection("apps")
@@ -639,7 +638,7 @@ async def reset_password(
         html_template = f.read()
 
     html_content = html_template.replace("{{code}}", str(auth_code))
-    html_content = html_template.replace("{{app_name}}", app_name)
+    html_content = html_content.replace("{{app_name}}", app_name)
     text_content = f"Your authentication code is: {auth_code}"
 
     msg = MIMEMultipart("alternative")
@@ -743,7 +742,7 @@ async def transfer_app_ownership(
 @app.get("/admin/dashboard")
 async def admin_dashboard(
     request: Request,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     # Ensure developer access
@@ -779,7 +778,7 @@ async def change_user_type(
     new_type: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(cookie),
+    session_id: UUID = Depends(get_session_id),
     session_data: SessionData = Depends(verifier)
 ):
     # Must be logged in as admin
