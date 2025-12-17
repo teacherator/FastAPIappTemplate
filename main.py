@@ -89,7 +89,7 @@ cookie_sizebud = SessionCookie(
         domain=".sizebud.com",
         path="/",
         secure=True,
-        httponly=False,
+        httponly=True,
         samesite="none",
     ),
 )
@@ -99,7 +99,7 @@ cookie_do = SessionCookie(
     identifier="basic-cookie",
     secret_key=SESSION_SECRET_KEY,
     cookie_params=CookieParameters(
-        domain=".ondigitalocean.app",
+        domain="fastapi-template-app-entxr.ondigitalocean.app",
         path="/",
         secure=True,
         httponly=True,
