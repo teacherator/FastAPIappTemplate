@@ -80,19 +80,19 @@ class SessionData(BaseModel):
     email: str
     session_id: UUID | None = None
 
-# # Session backend & cookie
-# cookie_sizebud = SessionCookie(
-#     cookie_name="fastapi_session",
-#     identifier="basic-cookie",
-#     secret_key=SESSION_SECRET_KEY,
-#     cookie_params=CookieParameters(
-#         domain=".sizebud.com",
-#         path="/",
-#         secure=True,
-#         httponly=True,
-#         samesite="none",
-#     ),
-# )
+# Session backend & cookie
+cookie_sizebud = SessionCookie(
+    cookie_name="fastapi_session",
+    identifier="basic-cookie",
+    secret_key=SESSION_SECRET_KEY,
+    cookie_params=CookieParameters(
+        domain=".sizebud.com",
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    ),
+)
 
 cookie_do = SessionCookie(
     cookie_name="fastapi_session",
