@@ -89,7 +89,7 @@ cookie_sizebud = SessionCookie(
         domain=".sizebud.com",
         path="/",
         secure=True,
-        httponly=True,
+        httponly=False,
         samesite="none",
     ),
 )
