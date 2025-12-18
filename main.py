@@ -67,7 +67,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # User models
 class User(BaseModel):
     email: str | None = None
@@ -253,43 +252,17 @@ async def verify_email(
     return {"message": "User registered successfully"}
 
 
-    
-# --- Session Verifier ---
-class BasicVerifier(SessionVerifier[UUID, SessionData]):
-    identifier = "basic-cookie"
-    auto_error = True
-
-    def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
-        self._backend = backend
-
-    @property
-    def backend(self):
-        return self._backend
-
-    @property
-    def auth_http_exception(self):
-        return HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-
-    async def verify_session(self, session_id: UUID) -> SessionData:
-        session = await self.backend.read(session_id)
-        if not session:
-            raise self.auth_http_exception
-        return session
-
-
-
-verifier = BasicVerifier(backend=backend)
-
 # --- /me route ---
 @app.get("/me")
 async def me(
     session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier),
 ):
-    return {"email": session_data.email}
+    session = await backend.read(session_id)
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    return {"email": session.email}
+
 
 
 @app.post("/logout")
