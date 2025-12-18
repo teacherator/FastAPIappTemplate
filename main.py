@@ -136,7 +136,6 @@ async def root():
 
 @app.post("/login")
 async def login(
-    request: Request,
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     response: Response
@@ -148,14 +147,13 @@ async def login(
     session_id = uuid4()
     await backend.create(session_id, SessionData(email=email, session_id=session_id))
 
-    origin = request.headers.get("origin", "")
+    cookie_do.attach_to_response(response, session_id)
 
-    if "sizebud.com" in origin:
-        cookie_sizebud.attach_to_response(response, session_id)
-    else:
-        cookie_do.attach_to_response(response, session_id)
+    response.status_code = 200
+    response.media_type = "application/json"
+    response.body = b'{"message":"Login successful"}'
+    return response
 
-    return {"message": "Login successful"}
 
 
 
