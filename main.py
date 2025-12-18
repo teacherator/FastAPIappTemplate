@@ -67,6 +67,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # User models
 class User(BaseModel):
     email: str | None = None
@@ -138,22 +139,16 @@ async def login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     response: Response
-):
+    ):
     user = user_col.find_one({"email": email})
     if not user or not verify_password(password, user["hashed_password"]):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-
+        raise HTTPException( status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
     session_id = uuid4()
-    await backend.create(session_id, SessionData(email=email, session_id=session_id))
-
+    session_data = SessionData(email=email, session_id=session_id)
+    await backend.create(session_id, session_data)
+    cookie_sizebud.attach_to_response(response, session_id)
     cookie_do.attach_to_response(response, session_id)
-
-    response.status_code = 200
-    response.media_type = "application/json"
-    response.body = b'{"message":"Login successful"}'
-    return response
-
-
+    return JSONResponse({"message": "Login successful"})
 
 
 
@@ -252,17 +247,43 @@ async def verify_email(
     return {"message": "User registered successfully"}
 
 
+    
+# --- Session Verifier ---
+class BasicVerifier(SessionVerifier[UUID, SessionData]):
+    identifier = "basic-cookie"
+    auto_error = True
+
+    def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
+        self._backend = backend
+
+    @property
+    def backend(self):
+        return self._backend
+
+    @property
+    def auth_http_exception(self):
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        )
+
+    async def verify_session(self, session_id: UUID) -> SessionData:
+        session = await self.backend.read(session_id)
+        if not session:
+            raise self.auth_http_exception
+        return session
+
+
+
+verifier = BasicVerifier(backend=backend)
+
 # --- /me route ---
 @app.get("/me")
 async def me(
     session_id: UUID = Depends(get_session_id),
+    session_data: SessionData = Depends(verifier),
 ):
-    session = await backend.read(session_id)
-    if not session:
-        raise HTTPException(status_code=401, detail="Invalid session")
-
-    return {"email": session.email}
-
+    return {"email": session_data.email}
 
 
 @app.post("/logout")
