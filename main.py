@@ -136,19 +136,27 @@ async def root():
 
 @app.post("/login")
 async def login(
+    request: Request,
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     response: Response
-    ):
+):
     user = user_col.find_one({"email": email})
     if not user or not verify_password(password, user["hashed_password"]):
-        raise HTTPException( status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
     session_id = uuid4()
-    session_data = SessionData(email=email, session_id=session_id)
-    await backend.create(session_id, session_data)
-    cookie_sizebud.attach_to_response(response, session_id)
-    cookie_do.attach_to_response(response, session_id)
-    return JSONResponse({"message": "Login successful"})
+    await backend.create(session_id, SessionData(email=email, session_id=session_id))
+
+    origin = request.headers.get("origin", "")
+
+    if "sizebud.com" in origin:
+        cookie_sizebud.attach_to_response(response, session_id)
+    else:
+        cookie_do.attach_to_response(response, session_id)
+
+    return {"message": "Login successful"}
+
 
 
 
