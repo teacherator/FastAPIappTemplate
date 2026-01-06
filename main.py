@@ -23,6 +23,9 @@ from fastapi import Form
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi_sessions.backends.implementations import MongoDBBackend
+from fastapi_sessions.backends.implementations.mongo import MongoCollection
+from datetime import timedelta
 
 
 # Load env variables
@@ -41,6 +44,9 @@ templates = Jinja2Templates(directory="templates")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(),server_api=ServerApi("1"))
 db = client.FastAPI
 user_col = db.get_collection("User_Info")
+# Make sure MongoDB is connected
+session_collection = db.get_collection("sessions")  # new collection for sessions
+
 
 verification_col = db.get_collection("email_verification")
 
@@ -108,8 +114,10 @@ cookie_do = SessionCookie(
 )
 
 
-backend = InMemoryBackend[UUID, SessionData]()  # In-memory for now
-
+backend = MongoDBBackend[UUID, SessionData](
+    collection=MongoCollection(session_collection),
+    identifier="basic-cookie"
+)
 
 # Password helpers
 def get_password_hash(password: str) -> str:
@@ -128,6 +136,12 @@ async def get_session_id(
     return sizebud or do
 
 
+session_collection.create_index(
+    "expires_at",
+    expireAfterSeconds=0  # 0 means Mongo handles TTL based on field value
+)
+
+
 # Routes
 @app.get("/")
 async def root():
@@ -139,17 +153,22 @@ async def login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     response: Response
-    ):
+):
     user = user_col.find_one({"email": email})
     if not user or not verify_password(password, user["hashed_password"]):
-        raise HTTPException( status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
     session_id = uuid4()
     session_data = SessionData(email=email, session_id=session_id)
     await backend.create(session_id, session_data)
+
     cookie_sizebud.attach_to_response(response, session_id)
     cookie_do.attach_to_response(response, session_id)
-    return JSONResponse({"message": "Login successful"})
 
+    response.headers["Content-Type"] = "application/json"
+    response.body = b'{"message":"Login successful"}'
+
+    return response
 
 
 @app.post("/register")
