@@ -67,11 +67,15 @@ password_hash = PasswordHash.recommended()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://sizebud.com", "https://fastapi-template-app-entxr.ondigitalocean.app"],  # replace with your frontend URL
-    allow_credentials=True,  # required to send cookies
+    allow_origins=[
+        "https://sizebud.com",
+        "https://www.sizebud.com",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # User models
@@ -84,32 +88,20 @@ class UserInDB(User):
 
 class SessionData(BaseModel):
     email: str
-    session_id: UUID | None = None
-
-# Session backend & cookie
-cookie_sizebud = SessionCookie(
-    cookie_name="fastapi_session",
-    identifier="basic-cookie",
-    secret_key=SESSION_SECRET_KEY,
-    cookie_params=CookieParameters(
-        domain=".sizebud.com",
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="none",
-    ),
-)
+    session_id: UUID
+    expires_at: datetime = None
 
 cookie_do = SessionCookie(
     cookie_name="fastapi_session",
     identifier="basic-cookie",
     secret_key=SESSION_SECRET_KEY,
     cookie_params=CookieParameters(
-        domain="fastapi-template-app-entxr.ondigitalocean.app",
+        domain=".sizebud.com",   # <-- leading dot = all subdomains
         path="/",
         secure=True,
         httponly=True,
         samesite="none",
+        max_age=3600,
     ),
 )
 
@@ -128,12 +120,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 async def get_session_id(
-    sizebud: UUID | None = Depends(cookie_sizebud),
-    do: UUID | None = Depends(cookie_do),
+        do: UUID | None = Depends(cookie_do),
 ):
-    if not sizebud and not do:
+    if not do:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return sizebud or do
+    return do
 
 
 session_collection.create_index(
@@ -159,11 +150,13 @@ async def login(
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
     session_id = uuid4()
-    session_data = SessionData(email=email, session_id=session_id)
+    session_data = SessionData(email=email, session_id=session_id, expires_at=datetime.utcnow() + timedelta(hours=1))
     await backend.create(session_id, session_data)
+    
 
-    cookie_sizebud.attach_to_response(response, session_id)
     cookie_do.attach_to_response(response, session_id)
+
+    
 
     response.headers["Content-Type"] = "application/json"
     response.body = b'{"message":"Login successful"}'
@@ -272,8 +265,9 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
     identifier = "basic-cookie"
     auto_error = True
 
-    def __init__(self, backend: InMemoryBackend[UUID, SessionData]):
+    def __init__(self, backend: MongoDBBackend[UUID, SessionData]):
         self._backend = backend
+
 
     @property
     def backend(self):
@@ -311,7 +305,6 @@ async def logout(
     session_id: UUID = Depends(get_session_id),
 ):
     await backend.delete(session_id)
-    cookie_sizebud.delete_from_response(response)
     cookie_do.delete_from_response(response)
     return {"message": "Logged out"}
 
