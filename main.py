@@ -15,7 +15,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
 from datetime import datetime
-from fastapi_sessions.backends.implementations import InMemoryBackend
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 from fastapi_sessions.session_verifier import SessionVerifier
 import re
@@ -96,7 +95,7 @@ cookie_do = SessionCookie(
     identifier="basic-cookie",
     secret_key=SESSION_SECRET_KEY,
     cookie_params=CookieParameters(
-        domain=".sizebud.com",   # <-- leading dot = all subdomains
+        domain=".sizebud.com",   # <-- this is the key
         path="/",
         secure=True,
         httponly=True,
@@ -139,6 +138,7 @@ async def root():
     routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
     return {"message": "API is running", "routes": routes}
 
+
 @app.post("/login")
 async def login(
     email: Annotated[str, Form()],
@@ -150,18 +150,17 @@ async def login(
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
     session_id = uuid4()
-    session_data = SessionData(email=email, session_id=session_id, expires_at=datetime.utcnow() + timedelta(hours=1))
-    await backend.create(session_id, session_data)
-    
+    session_data = SessionData(
+        email=email,
+        session_id=session_id,
+        expires_at=datetime.utcnow() + timedelta(hours=1)
+    )
 
+    await backend.create(session_id, session_data)
     cookie_do.attach_to_response(response, session_id)
 
-    
+    return {"message": "Login successful"}
 
-    response.headers["Content-Type"] = "application/json"
-    response.body = b'{"message":"Login successful"}'
-
-    return response
 
 
 @app.post("/register")
@@ -707,7 +706,8 @@ async def transfer_app_ownership(
     app_name: Annotated[str, Form()],
     new_developer_email: Annotated[str, Form()],
     response: Response,
-    session_data: SessionData = Depends(verifier)
+    session_id: UUID = Depends(get_session_id),
+    session_data: SessionData = Depends(verifier),
 ):
     apps = db.get_collection("apps")
 
