@@ -131,6 +131,9 @@ session_collection.create_index(
     expireAfterSeconds=0  # 0 means Mongo handles TTL based on field value
 )
 
+@app.options("/{path:path}")
+async def preflight_handler():
+    return Response(status_code=204)
 
 # Routes
 @app.get("/")
