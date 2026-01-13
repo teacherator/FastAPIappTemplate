@@ -22,8 +22,10 @@ from fastapi import Form
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_sessions.backends.implementations import MongoDBBackend
-from fastapi_sessions.backends.implementations.mongo import MongoCollection
+from fastapi_sessions.backends.implementations.mongo import (
+    MongoDBBackend,
+    MongoCollection,
+)
 from datetime import timedelta
 
 
