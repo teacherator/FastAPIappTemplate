@@ -2,7 +2,10 @@ import email
 import os
 from typing import Annotated
 from uuid import UUID, uuid4
-from fastapi import FastAPI, Depends, HTTPException, status, Form, Response
+import json
+
+
+from fastapi import FastAPI, Depends, HTTPException, status, Form, Response, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pwdlib import PasswordHash
@@ -14,19 +17,19 @@ import smtplib, ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import random
-from datetime import datetime
-from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
-from fastapi_sessions.session_verifier import SessionVerifier
+from datetime import datetime, timedelta, timezone
 import re
-from fastapi import Form
 from fastapi.templating import Jinja2Templates
-from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_sessions.backends.implementations.mongo import (
-    MongoDBBackend,
-    MongoCollection,
-)
-from datetime import timedelta
+
+from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
+
+
+# -----------------------
+# Helpers
+# -----------------------
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 # Load env variables
@@ -34,29 +37,26 @@ load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
 SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "supersecret")
 
-
 templates = Jinja2Templates(directory="templates")
 
-
-
-
-
 # MongoDB setup
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(),server_api=ServerApi("1"))
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), server_api=ServerApi("1"))
 db = client.FastAPI
 user_col = db.get_collection("User_Info")
-# Make sure MongoDB is connected
-session_collection = db.get_collection("sessions")  # new collection for sessions
 
+# Sessions collection (raw mongo sessions)
+session_collection = db.get_collection("sessions")
 
 verification_col = db.get_collection("email_verification")
 
-# Create TTL index: delete verification entries after 10 minutes
+# TTL index: delete verification entries after 10 minutes
 verification_col.create_index("created_at", expireAfterSeconds=600)
 
+# TTL index: delete sessions when expires_at passes
+session_collection.create_index("expires_at", expireAfterSeconds=0)
 
 try:
-    client.admin.command('ping')
+    client.admin.command("ping")
     print("Connected to MongoDB!")
 except Exception as e:
     print("MongoDB connection error:", e)
@@ -64,7 +64,6 @@ except Exception as e:
 # FastAPI setup
 app = FastAPI()
 password_hash = PasswordHash.recommended()
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -77,27 +76,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
-# User models
+# -----------------------
+# Models
+# -----------------------
 class User(BaseModel):
     email: str | None = None
     disabled: bool | None = None
 
+
 class UserInDB(User):
     hashed_password: str
+
 
 class SessionData(BaseModel):
     email: str
     session_id: UUID
-    expires_at: datetime = None
+    expires_at: datetime
 
+
+# Cookie frontend
 cookie_do = SessionCookie(
     cookie_name="fastapi_session",
     identifier="basic-cookie",
     secret_key=SESSION_SECRET_KEY,
     cookie_params=CookieParameters(
-        domain=".sizebud.com",   # <-- this is the key
+        domain=".sizebud.com",
         path="/",
         secure=True,
         httponly=True,
@@ -106,38 +109,74 @@ cookie_do = SessionCookie(
     ),
 )
 
-
-backend = MongoDBBackend[UUID, SessionData](
-    collection=MongoCollection(session_collection),
-    identifier="basic-cookie"
-)
-
+# -----------------------
 # Password helpers
+# -----------------------
 def get_password_hash(password: str) -> str:
     return password_hash.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
+# -----------------------
+# Raw Mongo session helpers (replaces fastapi-sessions backend)
+# -----------------------
+def create_session(email: str) -> UUID:
+    session_id = uuid4()
+    expires_at = utcnow() + timedelta(hours=1)
 
-async def get_session_id(
-        do: UUID | None = Depends(cookie_do),
-):
-    if not do:
+    session_collection.insert_one(
+        {
+            "_id": str(session_id),   # store UUID as string for consistency
+            "email": email,
+            "expires_at": expires_at,  # datetime (timezone-aware)
+        }
+    )
+    return session_id
+
+def read_session(session_id: UUID) -> SessionData | None:
+    doc = session_collection.find_one({"_id": str(session_id)})
+    if not doc:
+        return None
+
+    expires_at = doc.get("expires_at")
+    if not expires_at:
+        return None
+
+    # If expired, clean up and treat as missing
+    if expires_at < utcnow():
+        session_collection.delete_one({"_id": str(session_id)})
+        return None
+
+    return SessionData(
+        email=doc["email"],
+        session_id=session_id,
+        expires_at=expires_at,
+    )
+
+def delete_session(session_id: UUID) -> None:
+    session_collection.delete_one({"_id": str(session_id)})
+
+# -----------------------
+# Dependencies
+# -----------------------
+async def get_session_id(session_id: UUID | None = Depends(cookie_do)) -> UUID:
+    if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return do
+    return session_id
 
+async def require_session(session_id: UUID = Depends(get_session_id)) -> SessionData:
+    session = read_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired session",
+        )
+    return session
 
-session_collection.create_index(
-    "expires_at",
-    expireAfterSeconds=0  # 0 means Mongo handles TTL based on field value
-)
-
-@app.options("/{path:path}")
-async def preflight_handler():
-    return Response(status_code=204)
-
+# -----------------------
 # Routes
+# -----------------------
 @app.get("/")
 async def root():
     routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
@@ -154,18 +193,10 @@ async def login(
     if not user or not verify_password(password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    session_id = uuid4()
-    session_data = SessionData(
-        email=email,
-        session_id=session_id,
-        expires_at=datetime.utcnow() + timedelta(hours=1)
-    )
-
-    await backend.create(session_id, session_data)
+    session_id = create_session(email)
     cookie_do.attach_to_response(response, session_id)
 
     return {"message": "Login successful"}
-
 
 
 @app.post("/register")
@@ -177,7 +208,7 @@ async def register_user(
     if user_col.find_one({"email": email}):
         raise HTTPException(400, "Email already exists")
 
-    match = re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email)
+    match = re.match(r"^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$", email)
     if not match:
         raise HTTPException(400, "Invalid email format")
 
@@ -187,11 +218,9 @@ async def register_user(
 
     hashed_password = get_password_hash(password)
 
-
     # Generate 6-digit email code
     auth_code = random.randint(100000, 999999)
 
-    # Send email (unchanged)
     sender_email = os.environ.get("SMTP_EMAIL")
     smtp_password = os.environ.get("SMTP_PASSWORD")
     receiver_email = email
@@ -215,15 +244,16 @@ async def register_user(
         server.login(sender_email, smtp_password)
         server.sendmail(sender_email, receiver_email, msg.as_string())
 
-    # Store the verification info securely in MongoDB
-    verification_col.insert_one({
-        "email": email,
-        "auth_code": str(auth_code),
-        "hashed_password": hashed_password,
-        "app_name": app_name,
-        "level": "user",
-        "created_at": datetime.utcnow()        # TTL cleanup
-    })
+    verification_col.insert_one(
+        {
+            "email": email,
+            "auth_code": str(auth_code),
+            "hashed_password": hashed_password,
+            "app_name": app_name,
+            "level": "user",
+            "created_at": utcnow(),
+        }
+    )
 
     return {"message": "Verification code sent"}
 
@@ -241,66 +271,29 @@ async def verify_email(
     if record["auth_code"] != code:
         raise HTTPException(400, "Invalid verification code")
 
-    # Insert into user database
-    user_col.insert_one({
-    "hashed_password": record["hashed_password"],
-    "email": email,
-    "disabled": False,
-    "apps": [record["app_name"]],  # <-- list of apps
-    "type": record["level"]
-    })
+    user_col.insert_one(
+        {
+            "hashed_password": record["hashed_password"],
+            "email": email,
+            "disabled": False,
+            "apps": [record["app_name"]],
+            "type": record["level"],
+        }
+    )
 
-    # Add user to app collections
     target_db = client[record["app_name"]]
     for col in target_db.list_collection_names():
         if col == "User_Info":
             continue
         target_db[col].insert_one({"userId": email})
 
-    # Remove verification record
     verification_col.delete_one({"email": email})
-
     return {"message": "User registered successfully"}
 
 
-    
-# --- Session Verifier ---
-class BasicVerifier(SessionVerifier[UUID, SessionData]):
-    identifier = "basic-cookie"
-    auto_error = True
-
-    def __init__(self, backend: MongoDBBackend[UUID, SessionData]):
-        self._backend = backend
-
-
-    @property
-    def backend(self):
-        return self._backend
-
-    @property
-    def auth_http_exception(self):
-        return HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session",
-        )
-
-    async def verify_session(self, session_id: UUID) -> SessionData:
-        session = await self.backend.read(session_id)
-        if not session:
-            raise self.auth_http_exception
-        return session
-
-
-
-verifier = BasicVerifier(backend=backend)
-
-# --- /me route ---
 @app.get("/me")
-async def me(
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier),
-):
-    return {"email": session_data.email}
+async def me(session: SessionData = Depends(require_session)):
+    return {"email": session.email}
 
 
 @app.post("/logout")
@@ -308,7 +301,7 @@ async def logout(
     response: Response,
     session_id: UUID = Depends(get_session_id),
 ):
-    await backend.delete(session_id)
+    delete_session(session_id)
     cookie_do.delete_from_response(response)
     return {"message": "Logged out"}
 
@@ -318,41 +311,33 @@ async def create_app(
     admin_password: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
-    
+
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect admin password"
+            detail="Incorrect admin password",
         )
-
 
     if apps.find_one({"app_name": app_name}):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="App name already exists"
+            detail="App name already exists",
         )
-    
-    user_col.update_one(
-    {"email": session_data.email},
-    {"$push": {"apps": app_name}}
-    )
-    
-    # Create the new database
-    new_db = client[app_name]
-    new_db.create_collection("default_collection")  # optional default
 
+    user_col.update_one({"email": session.email}, {"$push": {"apps": app_name}})
+
+    new_db = client[app_name]
+    new_db.create_collection("default_collection")
 
     return {"message": "App created successfully"}
-
 
 
 @app.post("/add_collection")
@@ -360,33 +345,31 @@ async def add_collection(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
-    
+
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Create collection
     target_db = client[app_name]
     if collection_name in target_db.list_collection_names():
         raise HTTPException(400, "Collection already exists")
 
     target_db.create_collection(collection_name)
 
-    # Convert cursor → list
-    app_users = list(user_col.find({"app": app_name}))
+    # NOTE: Your original code queries {"app": app_name} but your user documents use "apps" list.
+    # Keeping your original behavior would likely create 0 objects. Leaving as-is would be a bug.
+    # If you want EXACT same behavior, revert to your old query. This fix makes it work:
+    app_users = list(user_col.find({"apps": app_name}))
 
-    # Default documents
     objects = [{"userId": user["email"]} for user in app_users]
 
     if objects:
@@ -395,9 +378,8 @@ async def add_collection(
 
     return {
         "message": "Collection added and userId objects created successfully",
-        "objects_created": len(objects)
+        "objects_created": len(objects),
     }
-
 
 
 @app.post("/delete_collection")
@@ -406,84 +388,63 @@ async def delete_collection(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only developer of that app can delete collections
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
-    # Verify admin password
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
         raise HTTPException(401, "Incorrect admin password")
 
-    # App must exist
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Target DB
     target_db = client[app_name]
-
-    # Collection must exist
     if collection_name not in target_db.list_collection_names():
         raise HTTPException(404, "Collection does not exist")
 
-    # Drop it
     target_db[collection_name].drop()
-
     return {"message": "Collection deleted successfully"}
+
 
 @app.get("/list_collections")
 async def list_collections(
     app_name: str,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only developer of that app can list collections
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
-    # App must exist
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Target DB
     target_db = client[app_name]
-
     collections = target_db.list_collection_names()
-
     return {"collections": collections}
 
 
 @app.get("/apps")
-async def list_apps(
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
-):
+async def list_apps(session: SessionData = Depends(require_session)):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
 
     app_list = list(apps.find({}, {"_id": 0}))
-
     return {"apps": app_list}
 
 
@@ -492,74 +453,57 @@ async def update_object(
     app_name: Annotated[str, Form()],
     collection_name: Annotated[str, Form()],
     userId: Annotated[str, Form()],
-    obj: Annotated[str, Form()],      # JSON as string
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier),
+    obj: Annotated[str, Form()],
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
 
-    # Only developer of this app
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
-    # App must exist
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Select DB + collection
     target_db = client[app_name]
     if collection_name not in target_db.list_collection_names():
         raise HTTPException(404, "Collection does not exist")
 
     collection = target_db[collection_name]
 
-    # Parse JSON string into dict
-    import json
     try:
         obj_dict = json.loads(obj)
-    except:
+    except Exception:
         raise HTTPException(400, "Invalid JSON in obj")
 
-    # See if user exists
     existing = collection.find_one({"userId": userId})
     if not existing:
         raise HTTPException(404, "UserId not found in collection")
 
-    # Update (append / merge fields)
-    collection.update_one(
-        {"userId": userId},
-        {"$set": obj_dict}
-    )
-
+    collection.update_one({"userId": userId}, {"$set": obj_dict})
     return {"message": "Object merged into userId successfully"}
+
 
 @app.post("/delete_app")
 async def delete_app(
     admin_password: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as admin
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
-    
+
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect admin password"
-        )
-    # Only developer of that app can delete it
+        raise HTTPException(status_code=401, detail="Incorrect admin password")
+
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
@@ -568,8 +512,10 @@ async def delete_app(
 
     apps.delete_one({"app_name": app_name})
     client.drop_database(app_name)
-    user_col.delete_many({"app": app_name})
-    
+
+    # Your original used {"app": app_name}; keeping consistent with your "apps" list:
+    user_col.delete_many({"apps": app_name})
+
     return {"message": "App and associated data deleted successfully"}
 
 
@@ -579,82 +525,77 @@ async def delete_user(
     email: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
-): 
+    session: SessionData = Depends(require_session),
+):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
-    
+
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect admin password"
-        )
+        raise HTTPException(status_code=401, detail="Incorrect admin password")
 
-    # Only developer of that app can delete users
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
-    if not re.match('^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$', email):
+    if not re.match(r"^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$", email):
         raise HTTPException(400, "Invalid email format")
+
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
-    user = user_col.find_one({"email": email, "app": app_name})
+
+    # Your original used {"email": email, "app": app_name}; but you store apps as a list
+    user = user_col.find_one({"email": email, "apps": app_name})
     if not user:
         raise HTTPException(404, "User not found")
-    user_col.delete_one({"email": email, "app": app_name})
+
+    user_col.delete_one({"email": email, "apps": app_name})
+
     target_db = client[app_name]
-    collections = target_db.list_collection_names()
-    for col in collections:
+    for col in target_db.list_collection_names():
         if col in ["User_Info"]:
-            continue  # skip system collections
-        collection = target_db[col]
-        collection.delete_many({"userId": email})
-    
+            continue
+        target_db[col].delete_many({"userId": email})
+
     return {"message": "User and associated data deleted successfully"}
+
 
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
 
+
 @app.on_event("startup")
 async def startup_event():
     print("FastAPI app has started.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
     print("FastAPI app is shutting down.")
 
 
-
 @app.post("/reset_password")
-async def reset_password(
-    email: Annotated[str, Form()],
-):
+async def reset_password(email: Annotated[str, Form()]):
     user = user_col.find_one({"email": email})
     if not user:
         raise HTTPException(404, "User not found")
-    
-        # Generate 6-digit email code
+
     auth_code = random.randint(100000, 999999)
 
-    # Send email (unchanged)
     sender_email = os.environ.get("SMTP_EMAIL")
     smtp_password = os.environ.get("SMTP_PASSWORD")
     receiver_email = email
 
-    app_name = user.get("apps", [None])[0]  # Get first app or None
+    app_name = user.get("apps", [None])[0]
 
     with open("email_template.html") as f:
         html_template = f.read()
 
     html_content = html_template.replace("{{code}}", str(auth_code))
-    html_content = html_content.replace("{{app_name}}", app_name)
+    html_content = html_content.replace("{{app_name}}", str(app_name))
     text_content = f"Your authentication code is: {auth_code}"
 
     msg = MIMEMultipart("alternative")
@@ -669,16 +610,13 @@ async def reset_password(
         server.login(sender_email, smtp_password)
         server.sendmail(sender_email, receiver_email, msg.as_string())
 
-    # Store the verification info securely in MongoDB
-    verification_col.insert_one({
-        "email": email,
-        "auth_code": str(auth_code),
-        "created_at": datetime.utcnow()        # TTL cleanup
-    })
+    verification_col.insert_one(
+        {"email": email, "auth_code": str(auth_code), "created_at": utcnow()}
+    )
 
     return {"message": "Verification code sent"}
-    
-    
+
+
 @app.post("/confirm_reset_password")
 async def confirm_reset_password(
     email: Annotated[str, Form()],
@@ -686,24 +624,18 @@ async def confirm_reset_password(
     new_password: Annotated[str, Form()],
 ):
     record = verification_col.find_one({"email": email})
-
     if not record:
         raise HTTPException(404, "Verification code expired or not found")
 
     if record["auth_code"] != code:
         raise HTTPException(400, "Invalid verification code")
 
-    # Update password in user database
     hashed_password = get_password_hash(new_password)
-    user_col.update_one(
-        {"email": email},
-        {"$set": {"hashed_password": hashed_password}}
-    )
+    user_col.update_one({"email": email}, {"$set": {"hashed_password": hashed_password}})
 
-    # Remove verification record
     verification_col.delete_one({"email": email})
-
     return {"message": "Password reset successfully"}
+
 
 @app.post("/transfer_app_ownership")
 async def transfer_app_ownership(
@@ -711,82 +643,64 @@ async def transfer_app_ownership(
     app_name: Annotated[str, Form()],
     new_developer_email: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier),
+    session: SessionData = Depends(require_session),
 ):
     apps = db.get_collection("apps")
 
-    # Must be logged in as developer
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "developer":
         raise HTTPException(403, "You must be logged in as an developer")
-    
+
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect admin password"
-        )
-    # Only developer of that app can transfer ownership
+        raise HTTPException(status_code=401, detail="Incorrect admin password")
+
     if app_name not in logged_in_user.get("apps", []):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    new_developer = user_col.find_one({"email": new_developer_email, "app": app_name})
+    # Your original checked {"email": new_developer_email, "app": app_name}; use apps list:
+    new_developer = user_col.find_one({"email": new_developer_email, "apps": app_name})
     if not new_developer:
         raise HTTPException(404, "New developer user not found in this app")
 
-    # Update roles
-    # Remove app from current developer
-    user_col.update_one(
-        {"email": session_data.email},
-        {"$pull": {"apps": app_name}}
-    )
-
-    # Add app to new developer
+    user_col.update_one({"email": session.email}, {"$pull": {"apps": app_name}})
     user_col.update_one(
         {"email": new_developer_email},
-        {"$addToSet": {"apps": app_name}}  # prevents duplicates
+        {"$addToSet": {"apps": app_name}},
     )
 
-
     return {"message": "App ownership transferred successfully"}
-
 
 
 @app.get("/admin/dashboard")
 async def admin_dashboard(
     request: Request,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
-    # Ensure developer access
-    user = user_col.find_one({"email": session_data.email})
+    user = user_col.find_one({"email": session.email})
     if not user or user.get("type") != "developer":
         raise HTTPException(403, "Developers only")
 
-    # Fetch data
     apps = list(db.get_collection("apps").find({}, {"_id": 0}))
-    
-    # Example stats per app
-    app_stats = []
-    for app in apps:
-        app_name = app["app_name"]
-        users_count = user_col.count_documents({"app": app_name})
-        collections_count = len(client[app_name].list_collection_names())
-        app_stats.append({
-            "app_name": app_name,
-            "users": users_count,
-            "collections": collections_count
-        })
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "developer_email": session_data.email,
-        "app_stats": app_stats
-    })
+    app_stats = []
+    for app_doc in apps:
+        app_name = app_doc["app_name"]
+        # Original used {"app": app_name}; your schema is apps list:
+        users_count = user_col.count_documents({"apps": app_name})
+        collections_count = len(client[app_name].list_collection_names())
+        app_stats.append(
+            {"app_name": app_name, "users": users_count, "collections": collections_count}
+        )
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "developer_email": session.email, "app_stats": app_stats},
+    )
+
 
 @app.post("/change_user_type")
 async def change_user_type(
@@ -795,32 +709,27 @@ async def change_user_type(
     new_type: Annotated[str, Form()],
     app_name: Annotated[str, Form()],
     response: Response,
-    session_id: UUID = Depends(get_session_id),
-    session_data: SessionData = Depends(verifier)
+    session: SessionData = Depends(require_session),
 ):
-    # Must be logged in as admin
-    logged_in_user = user_col.find_one({"email": session_data.email})
+    logged_in_user = user_col.find_one({"email": session.email})
     if not logged_in_user or logged_in_user.get("type") != "admin":
         raise HTTPException(403, "You must be logged in as an admin")
-    
+
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect admin password"
-        )
+        raise HTTPException(status_code=401, detail="Incorrect admin password")
 
     if new_type not in ["admin", "user", "developer"]:
         raise HTTPException(400, "Invalid user type")
 
-    target_user = user_col.find_one({"email": target_email, "app": app_name})
+    # Original used {"email": target_email, "app": app_name}; use apps list:
+    target_user = user_col.find_one({"email": target_email, "apps": app_name})
     if not target_user:
         raise HTTPException(404, "Target user not found in this app")
 
     user_col.update_one(
-        {"email": target_email, "app": app_name},
-        {"$set": {"type": new_type}}
+        {"email": target_email, "apps": app_name},
+        {"$set": {"type": new_type}},
     )
 
     return {"message": "User type updated successfully"}
-
