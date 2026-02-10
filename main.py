@@ -4,7 +4,6 @@ from typing import Annotated
 from uuid import UUID, uuid4
 import json
 
-
 from fastapi import FastAPI, Depends, HTTPException, status, Form, Response, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -25,9 +24,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 
 
-# -----------------------
-# Helpers
-# -----------------------
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -44,15 +40,12 @@ client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), server_api=ServerApi(
 db = client.FastAPI
 user_col = db.get_collection("User_Info")
 
-# Sessions collection (raw mongo sessions)
 session_collection = db.get_collection("sessions")
 
 verification_col = db.get_collection("email_verification")
 
-# TTL index: delete verification entries after 10 minutes
 verification_col.create_index("created_at", expireAfterSeconds=600)
 
-# TTL index: delete sessions when expires_at passes
 session_collection.create_index("expires_at", expireAfterSeconds=0)
 
 try:
@@ -76,9 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------
-# Models
-# -----------------------
+
 class User(BaseModel):
     email: str | None = None
     disabled: bool | None = None
@@ -100,7 +91,6 @@ cookie_do = SessionCookie(
     identifier="basic-cookie",
     secret_key=SESSION_SECRET_KEY,
     cookie_params=CookieParameters(
-        domain=".sizebud.com",
         path="/",
         secure=True,
         httponly=True,
@@ -109,18 +99,14 @@ cookie_do = SessionCookie(
     ),
 )
 
-# -----------------------
-# Password helpers
-# -----------------------
+
 def get_password_hash(password: str) -> str:
     return password_hash.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
-# -----------------------
-# Raw Mongo session helpers (replaces fastapi-sessions backend)
-# -----------------------
+
 def create_session(email: str) -> UUID:
     session_id = uuid4()
     expires_at = utcnow() + timedelta(hours=1)
@@ -157,9 +143,6 @@ def read_session(session_id: UUID) -> SessionData | None:
 def delete_session(session_id: UUID) -> None:
     session_collection.delete_one({"_id": str(session_id)})
 
-# -----------------------
-# Dependencies
-# -----------------------
 async def get_session_id(session_id: UUID | None = Depends(cookie_do)) -> UUID:
     if not session_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -174,9 +157,6 @@ async def require_session(session_id: UUID = Depends(get_session_id)) -> Session
         )
     return session
 
-# -----------------------
-# Routes
-# -----------------------
 @app.get("/")
 async def root():
     routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
@@ -365,9 +345,6 @@ async def add_collection(
 
     target_db.create_collection(collection_name)
 
-    # NOTE: Your original code queries {"app": app_name} but your user documents use "apps" list.
-    # Keeping your original behavior would likely create 0 objects. Leaving as-is would be a bug.
-    # If you want EXACT same behavior, revert to your old query. This fix makes it work:
     app_users = list(user_col.find({"apps": app_name}))
 
     objects = [{"userId": user["email"]} for user in app_users]
@@ -513,7 +490,6 @@ async def delete_app(
     apps.delete_one({"app_name": app_name})
     client.drop_database(app_name)
 
-    # Your original used {"app": app_name}; keeping consistent with your "apps" list:
     user_col.delete_many({"apps": app_name})
 
     return {"message": "App and associated data deleted successfully"}
@@ -546,7 +522,6 @@ async def delete_user(
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Your original used {"email": email, "app": app_name}; but you store apps as a list
     user = user_col.find_one({"email": email, "apps": app_name})
     if not user:
         raise HTTPException(404, "User not found")
@@ -661,7 +636,6 @@ async def transfer_app_ownership(
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    # Your original checked {"email": new_developer_email, "app": app_name}; use apps list:
     new_developer = user_col.find_one({"email": new_developer_email, "apps": app_name})
     if not new_developer:
         raise HTTPException(404, "New developer user not found in this app")
@@ -689,7 +663,6 @@ async def admin_dashboard(
     app_stats = []
     for app_doc in apps:
         app_name = app_doc["app_name"]
-        # Original used {"app": app_name}; your schema is apps list:
         users_count = user_col.count_documents({"apps": app_name})
         collections_count = len(client[app_name].list_collection_names())
         app_stats.append(
