@@ -74,7 +74,19 @@ app.add_middleware(
 
 PORTAL_DIST = Path(__file__).parent / "Portal" / "dist"
 
-app.mount("/portal", StaticFiles(directory=PORTAL_DIST, html=True), name="portal")
+if PORTAL_DIST.exists():
+    app.mount("/portal", StaticFiles(directory=PORTAL_DIST, html=True), name="portal")
+
+    @app.get("/portal")
+    def portal_root():
+        return FileResponse(PORTAL_DIST / "index.html")
+else:
+    @app.get("/portal")
+    def portal_missing():
+        return {
+            "error": "Portal not built in this deployment",
+            "fix": "Build the Vite app and include Portal/dist in the deploy image.",
+        }
 
 
 class User(BaseModel):
@@ -714,7 +726,3 @@ async def change_user_type(
 
     return {"message": "User type updated successfully"}
 
-
-@app.get("/portal")
-def portal_root():
-    return FileResponse(PORTAL_DIST / "index.html")
