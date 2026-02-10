@@ -22,6 +22,9 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 
 
 def utcnow() -> datetime:
@@ -68,6 +71,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+PORTAL_DIST = Path(__file__).parent / "Portal" / "dist"
+
+app.mount("/portal", StaticFiles(directory=PORTAL_DIST, html=True), name="portal")
 
 
 class User(BaseModel):
@@ -706,3 +713,8 @@ async def change_user_type(
     )
 
     return {"message": "User type updated successfully"}
+
+
+@app.get("/portal")
+def portal_root():
+    return FileResponse(PORTAL_DIST / "index.html")
