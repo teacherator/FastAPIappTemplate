@@ -1,0 +1,7 @@
+Portal/node_modules
+Portal/dist
+__pycache__
+.git
+.idea
+.vscode
+.env
