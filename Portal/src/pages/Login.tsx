@@ -15,7 +15,7 @@ import {
 } 
 from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, LogIn, CheckCircle2, ArrowLeft } from "lucide-react";
+import { Loader2, LogIn, CheckCircle2} from "lucide-react";
 import { Link, useLocation } from "wouter";
 
 const loginSchema = z.object({
@@ -103,16 +103,6 @@ export default function Login() {
       ></div>
 
       <div className="relative z-10 min-h-screen flex flex-col items-center justify-center p-4">
-        {/* Back to Home */}
-        <Button
-          variant="ghost"
-          className="absolute top-8 left-8 gap-2"
-          data-testid="button-back-home"
-          onClick={() => navigate("/")}
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to Home
-        </Button>
 
         <Card className="w-full max-w-lg border-2 shadow-lg">
           <CardContent className="p-12">
