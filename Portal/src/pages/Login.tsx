@@ -69,7 +69,7 @@ export default function Login() {
       });
 
       setTimeout(() => {
-        window.location.href = "/";
+        window.location.href = "/portal/";
       }, 1500);
     } catch (error) {
       toast({
