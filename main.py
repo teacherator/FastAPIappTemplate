@@ -66,7 +66,6 @@ app.add_middleware(
     allow_origins=[
         "https://sizebud.com",
         "https://www.sizebud.com",
-        "https://api.sizebud.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
