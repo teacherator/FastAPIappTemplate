@@ -59,7 +59,7 @@ export default function Login() {
         throw new Error(errorData.detail || "Login failed");
       }
 
-      const result = await response.json();
+      await response.json();
       localStorage.setItem("email", data.email);
       setIsSuccess(true);
 
