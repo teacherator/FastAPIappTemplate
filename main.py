@@ -72,20 +72,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PORTAL_DIST = Path(__file__).parent / "Portal" / "dist"
+# In Docker, WORKDIR is /app
+CANDIDATES = [
+    Path("/app/Portal/dist"),
+    Path(__file__).parent / "Portal" / "dist",
+]
 
-if PORTAL_DIST.exists():
-    app.mount("/portal", StaticFiles(directory=PORTAL_DIST, html=True), name="portal")
+PORTAL_DIST = next((p for p in CANDIDATES if p.exists()), None)
+
+if PORTAL_DIST:
+    app.mount("/portal", StaticFiles(directory=str(PORTAL_DIST), html=True), name="portal")
 
     @app.get("/portal")
     def portal_root():
-        return FileResponse(PORTAL_DIST / "index.html")
+        return FileResponse(str(PORTAL_DIST / "index.html"))
 else:
     @app.get("/portal")
     def portal_missing():
         return {
             "error": "Portal not built in this deployment",
-            "fix": "Build the Vite app and include Portal/dist in the deploy image.",
+            "checked": [str(p) for p in CANDIDATES],
+            "cwd": os.getcwd(),
+            "files_here": os.listdir("."),
         }
 
 
