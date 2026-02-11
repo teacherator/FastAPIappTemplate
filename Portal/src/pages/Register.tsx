@@ -20,7 +20,7 @@ import { Link } from "wouter";
 const registerSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
-  appName: z.string().min(1, "App name is required"),
+  appName: z.string().optional(),
 });
 
 type RegisterFormData = z.infer<typeof registerSchema>;
@@ -46,7 +46,9 @@ export default function Register() {
       const formData = new FormData();
       formData.append("email", data.email);
       formData.append("password", data.password);
-      formData.append("app_name", data.appName);
+      if (data.appName && data.appName.trim() !== "") {
+        formData.append("app_name", data.appName.trim());
+      }
 
       const response = await fetch("/register", {
         method: "POST",
@@ -110,7 +112,7 @@ export default function Register() {
                     Create Account
                   </h1>
                   <p className="text-muted-foreground text-lg">
-                    Register with your email and app name
+                    Register with your email. App name is optional.
                   </p>
                 </div>
 
@@ -162,7 +164,7 @@ export default function Register() {
                       name="appName"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-base">App Name</FormLabel>
+                          <FormLabel className="text-base">App Name (Optional)</FormLabel>
                           <FormControl>
                             <Input
                               placeholder="Your app name"

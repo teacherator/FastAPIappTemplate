@@ -31,6 +31,34 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+PORTAL_APP = "portal"
+
+
+def normalize_app_name(app_name: str | None) -> str:
+    if app_name is None:
+        return PORTAL_APP
+    cleaned = app_name.strip()
+    return cleaned if cleaned else PORTAL_APP
+
+
+def user_scope_query(email: str, app_name: str | None = None) -> dict:
+    query = {"email": email}
+    if email != "admin":
+        query["app_name"] = normalize_app_name(app_name)
+    return query
+
+
+def app_membership_filter(app_name: str) -> dict:
+    # Keep legacy "apps" support while transitioning to app-scoped accounts.
+    return {"$or": [{"app_name": app_name}, {"apps": app_name}]}
+
+
+def user_has_app_access(user: dict, app_name: str) -> bool:
+    if user.get("type") == "admin":
+        return True
+    return user.get("app_name") == app_name or app_name in user.get("apps", [])
+
+
 # Load env variables
 load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
@@ -108,6 +136,7 @@ class UserInDB(User):
 
 class SessionData(BaseModel):
     email: str
+    app_name: str = PORTAL_APP
     session_id: UUID
     expires_at: datetime
 
@@ -134,7 +163,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return password_hash.verify(plain_password, hashed_password)
 
 
-def create_session(email: str) -> UUID:
+def create_session(email: str, app_name: str) -> UUID:
     session_id = uuid4()
     expires_at = utcnow() + timedelta(hours=1)
 
@@ -142,6 +171,7 @@ def create_session(email: str) -> UUID:
         {
             "_id": str(session_id),   # store UUID as string for consistency
             "email": email,
+            "app_name": app_name,
             "expires_at": expires_at,  # datetime (timezone-aware)
         }
     )
@@ -163,6 +193,7 @@ def read_session(session_id: UUID) -> SessionData | None:
 
     return SessionData(
         email=doc["email"],
+        app_name=doc.get("app_name", PORTAL_APP),
         session_id=session_id,
         expires_at=expires_at,
     )
@@ -184,6 +215,14 @@ async def require_session(session_id: UUID = Depends(get_session_id)) -> Session
         )
     return session
 
+
+def get_logged_in_user(session: SessionData):
+    user = user_col.find_one(user_scope_query(session.email, session.app_name))
+    if user:
+        return user
+    # Backward compatibility for legacy accounts without app_name.
+    return user_col.find_one({"email": session.email})
+
 @app.get("/")
 async def root():
     routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
@@ -194,13 +233,15 @@ async def root():
 async def login(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
-    response: Response
+    response: Response,
+    app_name: Annotated[str | None, Form()] = None,
 ):
-    user = user_col.find_one({"email": email})
+    scoped_app = normalize_app_name(app_name)
+    user = user_col.find_one(user_scope_query(email, scoped_app))
     if not user or not verify_password(password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    session_id = create_session(email)
+    session_id = create_session(email, user.get("app_name", scoped_app))
     cookie_do.attach_to_response(response, session_id)
 
     return {"message": "Login successful"}
@@ -210,18 +251,21 @@ async def login(
 async def register_user(
     password: Annotated[str, Form()],
     email: Annotated[str, Form()] = None,
-    app_name: Annotated[str, Form()] = None,
+    app_name: Annotated[str | None, Form()] = None,
 ):
-    if user_col.find_one({"email": email}):
+    scoped_app = normalize_app_name(app_name)
+
+    if user_col.find_one(user_scope_query(email, scoped_app)):
         raise HTTPException(400, "Email already exists")
 
     match = re.match(r"^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$", email)
     if not match:
         raise HTTPException(400, "Invalid email format")
 
-    apps = db.get_collection("apps")
-    if not apps.find_one({"app_name": app_name}):
-        raise HTTPException(404, "App not found")
+    if scoped_app != PORTAL_APP:
+        apps = db.get_collection("apps")
+        if not apps.find_one({"app_name": scoped_app}):
+            raise HTTPException(404, "App not found")
 
     hashed_password = get_password_hash(password)
 
@@ -236,7 +280,7 @@ async def register_user(
         html_template = f.read()
 
     html_content = html_template.replace("{{code}}", str(auth_code))
-    html_content = html_content.replace("{{app_name}}", app_name)
+    html_content = html_content.replace("{{app_name}}", scoped_app)
     text_content = f"Your authentication code is: {auth_code}"
 
     msg = MIMEMultipart("alternative")
@@ -256,7 +300,7 @@ async def register_user(
             "email": email,
             "auth_code": str(auth_code),
             "hashed_password": hashed_password,
-            "app_name": app_name,
+            "app_name": scoped_app,
             "level": "user",
             "created_at": utcnow(),
         }
@@ -269,8 +313,12 @@ async def register_user(
 async def verify_email(
     email: Annotated[str, Form()],
     code: Annotated[str, Form()],
+    app_name: Annotated[str | None, Form()] = None,
 ):
-    record = verification_col.find_one({"email": email})
+    scoped_app = normalize_app_name(app_name)
+    record = verification_col.find_one(
+        {"email": email, "$or": [{"app_name": scoped_app}, {"app_name": {"$exists": False}}]}
+    )
 
     if not record:
         raise HTTPException(404, "Verification code expired or not found")
@@ -278,21 +326,25 @@ async def verify_email(
     if record["auth_code"] != code:
         raise HTTPException(400, "Invalid verification code")
 
+    scoped_app = normalize_app_name(record.get("app_name"))
+
     user_col.insert_one(
         {
             "hashed_password": record["hashed_password"],
             "email": email,
+            "app_name": scoped_app,
             "disabled": False,
-            "apps": [record["app_name"]],
+            "apps": [scoped_app] if scoped_app != PORTAL_APP else [],
             "type": record["level"],
         }
     )
 
-    target_db = client[record["app_name"]]
-    for col in target_db.list_collection_names():
-        if col == "User_Info":
-            continue
-        target_db[col].insert_one({"userId": email})
+    if scoped_app != PORTAL_APP:
+        target_db = client[scoped_app]
+        for col in target_db.list_collection_names():
+            if col == "User_Info":
+                continue
+            target_db[col].insert_one({"userId": email})
 
     verification_col.delete_one({"email": email})
     return {"message": "User registered successfully"}
@@ -300,7 +352,7 @@ async def verify_email(
 
 @app.get("/me")
 async def me(session: SessionData = Depends(require_session)):
-    return {"email": session.email}
+    return {"email": session.email, "app_name": session.app_name}
 
 
 @app.post("/logout")
@@ -322,8 +374,8 @@ async def create_app(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
     admin_user = user_col.find_one({"email": "admin"})
@@ -339,7 +391,11 @@ async def create_app(
             detail="App name already exists",
         )
 
-    user_col.update_one({"email": session.email}, {"$push": {"apps": app_name}})
+    if session.email != "admin":
+        user_col.update_one(
+            user_scope_query(session.email, session.app_name),
+            {"$set": {"app_name": app_name}, "$addToSet": {"apps": app_name}},
+        )
 
     new_db = client[app_name]
     new_db.create_collection("default_collection")
@@ -356,11 +412,11 @@ async def add_collection(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
@@ -372,7 +428,7 @@ async def add_collection(
 
     target_db.create_collection(collection_name)
 
-    app_users = list(user_col.find({"apps": app_name}))
+    app_users = list(user_col.find(app_membership_filter(app_name)))
 
     objects = [{"userId": user["email"]} for user in app_users]
 
@@ -396,11 +452,11 @@ async def delete_collection(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     admin_user = user_col.find_one({"email": "admin"})
@@ -425,11 +481,11 @@ async def list_collections(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
@@ -444,8 +500,8 @@ async def list_collections(
 async def list_apps(session: SessionData = Depends(require_session)):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
     app_list = list(apps.find({}, {"_id": 0}))
@@ -462,11 +518,11 @@ async def update_object(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
@@ -500,15 +556,15 @@ async def delete_app(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect admin password")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
@@ -517,7 +573,7 @@ async def delete_app(
     apps.delete_one({"app_name": app_name})
     client.drop_database(app_name)
 
-    user_col.delete_many({"apps": app_name})
+    user_col.delete_many(app_membership_filter(app_name))
 
     return {"message": "App and associated data deleted successfully"}
 
@@ -532,15 +588,15 @@ async def delete_user(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect admin password")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not re.match(r"^[_a-z0-9-]+(\.[_a-z0-9-]+)*@[a-z0-9-]+(\.[a-z0-9-]+)*(\.[a-z]{2,4})$", email):
@@ -549,11 +605,11 @@ async def delete_user(
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    user = user_col.find_one({"email": email, "apps": app_name})
+    user = user_col.find_one({"email": email, "$or": [{"app_name": app_name}, {"apps": app_name}]})
     if not user:
         raise HTTPException(404, "User not found")
 
-    user_col.delete_one({"email": email, "apps": app_name})
+    user_col.delete_one({"email": email, "$or": [{"app_name": app_name}, {"apps": app_name}]})
 
     target_db = client[app_name]
     for col in target_db.list_collection_names():
@@ -591,7 +647,7 @@ async def reset_password(email: Annotated[str, Form()]):
     smtp_password = os.environ.get("SMTP_PASSWORD")
     receiver_email = email
 
-    app_name = user.get("apps", [None])[0]
+    app_name = user.get("app_name") or user.get("apps", [None])[0] or PORTAL_APP
 
     with open("email_template.html") as f:
         html_template = f.read()
@@ -649,28 +705,33 @@ async def transfer_app_ownership(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = user_col.find_one({"email": session.email})
-    if not logged_in_user or logged_in_user.get("type") != "developer":
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
 
     admin_user = user_col.find_one({"email": "admin"})
     if not verify_password(admin_password, admin_user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect admin password")
 
-    if app_name not in logged_in_user.get("apps", []):
+    if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
-    new_developer = user_col.find_one({"email": new_developer_email, "apps": app_name})
+    new_developer = user_col.find_one(
+        {"email": new_developer_email, "$or": [{"app_name": app_name}, {"apps": app_name}]}
+    )
     if not new_developer:
         raise HTTPException(404, "New developer user not found in this app")
 
-    user_col.update_one({"email": session.email}, {"$pull": {"apps": app_name}})
     user_col.update_one(
-        {"email": new_developer_email},
-        {"$addToSet": {"apps": app_name}},
+        user_scope_query(session.email, session.app_name),
+        {"$pull": {"apps": app_name}, "$set": {"app_name": PORTAL_APP}},
+    )
+    user_col.update_one(
+        {"email": new_developer_email, "$or": [{"app_name": app_name}, {"apps": app_name}]},
+        {"$addToSet": {"apps": app_name}, "$set": {"app_name": app_name}},
     )
 
     return {"message": "App ownership transferred successfully"}
@@ -690,7 +751,7 @@ async def admin_dashboard(
     app_stats = []
     for app_doc in apps:
         app_name = app_doc["app_name"]
-        users_count = user_col.count_documents({"apps": app_name})
+        users_count = user_col.count_documents(app_membership_filter(app_name))
         collections_count = len(client[app_name].list_collection_names())
         app_stats.append(
             {"app_name": app_name, "users": users_count, "collections": collections_count}
@@ -711,7 +772,7 @@ async def change_user_type(
     response: Response,
     session: SessionData = Depends(require_session),
 ):
-    logged_in_user = user_col.find_one({"email": session.email})
+    logged_in_user = get_logged_in_user(session)
     if not logged_in_user or logged_in_user.get("type") != "admin":
         raise HTTPException(403, "You must be logged in as an admin")
 
@@ -723,12 +784,14 @@ async def change_user_type(
         raise HTTPException(400, "Invalid user type")
 
     # Original used {"email": target_email, "app": app_name}; use apps list:
-    target_user = user_col.find_one({"email": target_email, "apps": app_name})
+    target_user = user_col.find_one(
+        {"email": target_email, "$or": [{"app_name": app_name}, {"apps": app_name}]}
+    )
     if not target_user:
         raise HTTPException(404, "Target user not found in this app")
 
     user_col.update_one(
-        {"email": target_email, "apps": app_name},
+        {"email": target_email, "$or": [{"app_name": app_name}, {"apps": app_name}]},
         {"$set": {"type": new_type}},
     )
 
