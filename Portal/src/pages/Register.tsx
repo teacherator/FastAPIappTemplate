@@ -12,42 +12,43 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} 
-from "@/components/ui/form";
+} from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, LogIn, CheckCircle2} from "lucide-react";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import { Link } from "wouter";
 
-const loginSchema = z.object({
+const registerSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
-  password: z.string().min(1, "Password is required"),
+  password: z.string().min(6, "Password must be at least 6 characters"),
+  appName: z.string().min(1, "App name is required"),
 });
 
-type LoginFormData = z.infer<typeof loginSchema>;
+type RegisterFormData = z.infer<typeof registerSchema>;
 
-export default function Login() {
+export default function Register() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const { toast } = useToast();
 
-  const form = useForm<LoginFormData>({
-    resolver: zodResolver(loginSchema),
+  const form = useForm<RegisterFormData>({
+    resolver: zodResolver(registerSchema),
     defaultValues: {
       email: "",
       password: "",
+      appName: "",
     },
   });
 
-  const onSubmit = async (data: LoginFormData) => {
+  const onSubmit = async (data: RegisterFormData) => {
     setIsSubmitting(true);
-    setIsSuccess(false);
 
     try {
       const formData = new FormData();
       formData.append("email", data.email);
       formData.append("password", data.password);
+      formData.append("app_name", data.appName);
 
-      const response = await fetch("https://api.sizebud.com/login", {
+      const response = await fetch("/register", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -55,28 +56,19 @@ export default function Login() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || "Login failed");
+        throw new Error(errorData.detail || "Registration failed");
       }
 
-      await response.json();
-      localStorage.setItem("email", data.email);
       setIsSuccess(true);
-
       toast({
-        title: "Login successful!",
-        description: `Welcome back!`,
+        title: "Registration started",
+        description: "A verification code was sent to your email.",
       });
-
-      setTimeout(() => {
-        window.location.href = "/portal/";
-      }, 1500);
     } catch (error) {
       toast({
-        title: "Login failed",
+        title: "Registration failed",
         description:
-          error instanceof Error
-            ? error.message
-            : "Please check your credentials",
+          error instanceof Error ? error.message : "Please try again",
         variant: "destructive",
       });
     } finally {
@@ -86,23 +78,8 @@ export default function Login() {
 
   return (
     <div className="min-h-screen relative overflow-hidden">
-      {/* Background Gradient */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-background to-accent/5"></div>
-
-      {/* Grid Pattern */}
-      <div
-        className="absolute inset-0 opacity-[0.02]"
-        style={{
-          backgroundImage: `
-          linear-gradient(to right, hsl(var(--primary)) 1px, transparent 1px),
-          linear-gradient(to bottom, hsl(var(--primary)) 1px, transparent 1px)
-        `,
-          backgroundSize: "4rem 4rem",
-        }}
-      ></div>
-
       <div className="relative z-10 min-h-screen flex flex-col items-center justify-center p-4">
-
         <Card className="w-full max-w-lg border-2 shadow-lg">
           <CardContent className="p-12">
             {isSuccess ? (
@@ -111,32 +88,32 @@ export default function Login() {
                   <CheckCircle2 className="h-10 w-10 text-green-600" />
                 </div>
                 <div className="space-y-3">
-                  <h3 className="text-3xl font-display font-bold">
-                    Welcome Back!
-                  </h3>
+                  <h1 className="text-3xl font-display font-bold">
+                    Check Your Email
+                  </h1>
                   <p className="text-muted-foreground text-lg">
-                    Redirecting you to your dashboard...
+                    Your account registration was submitted and a verification
+                    code has been sent.
                   </p>
+                  <Link
+                    href="/"
+                    className="inline-block text-primary hover:underline font-semibold"
+                  >
+                    Return to login
+                  </Link>
                 </div>
               </div>
             ) : (
               <>
-                {/* Header */}
-                <div className="text-center space-y-4 mb-10">
-                  <div className="mx-auto w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-                    <LogIn className="h-8 w-8 text-primary" />
-                  </div>
-                  <div>
-                    <h1 className="text-4xl font-display font-bold mb-2">
-                      Welcome Back
-                    </h1>
-                    <p className="text-muted-foreground text-lg">
-                      Sign in to your SizeBud account
-                    </p>
-                  </div>
+                <div className="text-center space-y-2 mb-10">
+                  <h1 className="text-4xl font-display font-bold">
+                    Create Account
+                  </h1>
+                  <p className="text-muted-foreground text-lg">
+                    Register with your email and app name
+                  </p>
                 </div>
 
-                {/* Form */}
                 <Form {...form}>
                   <form
                     onSubmit={form.handleSubmit(onSubmit)}
@@ -155,7 +132,6 @@ export default function Login() {
                               type="email"
                               placeholder="you@example.com"
                               {...field}
-                              data-testid="input-email"
                             />
                           </FormControl>
                           <FormMessage />
@@ -172,9 +148,25 @@ export default function Login() {
                           <FormControl>
                             <Input
                               type="password"
-                              placeholder="Enter your password"
+                              placeholder="Create a password"
                               {...field}
-                              data-testid="input-password"
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="appName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-base">App Name</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="Your app name"
+                              {...field}
                             />
                           </FormControl>
                           <FormMessage />
@@ -187,42 +179,32 @@ export default function Login() {
                       size="lg"
                       className="w-full"
                       disabled={isSubmitting}
-                      data-testid="button-login"
                     >
                       {isSubmitting ? (
                         <>
                           <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                          Signing in...
+                          Registering...
                         </>
                       ) : (
-                        "Sign In"
+                        "Register"
                       )}
                     </Button>
 
-                    {/* Footer Links */}
-                    <div className="pt-6 space-y-4 text-center border-t">
-                      <p className="text-muted-foreground">
-                        Don't have an account?{" "}
-                        <Link
-                          href="/register"
-                          className="text-primary hover:underline font-semibold"
-                          data-testid="link-to-register"
-                        >
-                          Create one now
-                        </Link>
-                      </p>
-                    </div>
+                    <p className="text-center text-muted-foreground">
+                      Already have an account?{" "}
+                      <Link
+                        href="/"
+                        className="text-primary hover:underline font-semibold"
+                      >
+                        Sign in
+                      </Link>
+                    </p>
                   </form>
                 </Form>
               </>
             )}
           </CardContent>
         </Card>
-
-        {/* Trust Badge */}
-        <p className="mt-8 text-sm text-muted-foreground">
-          Secure login • Your data is protected
-        </p>
       </div>
     </div>
   );
