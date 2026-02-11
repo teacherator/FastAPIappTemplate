@@ -15,19 +15,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen">
-      {email ? (
-        <Home email={email} onLogout={handleLogout} />
-      ) : (
-        <Router base="/portal">
-          <Switch>
-            <Route path="/" component={Login} />
-            <Route path="/register" component={Register} />
-            <Route>
-              <Redirect to="/" />
-            </Route>
-          </Switch>
-        </Router>
-      )}
+      <Router base="/portal">
+        <Switch>
+          <Route path="/">
+            {email ? <Home email={email} onLogout={handleLogout} /> : <Login />}
+          </Route>
+          <Route path="/register" component={Register} />
+          <Route>
+            <Redirect to="/" />
+          </Route>
+        </Switch>
+      </Router>
     </div>
   );
 }
