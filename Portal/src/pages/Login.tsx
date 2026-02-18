@@ -62,11 +62,6 @@ export default function Login() {
       localStorage.setItem("email", data.email);
       setIsSuccess(true);
 
-      toast({
-        title: "Login successful!",
-        description: `Welcome back!`,
-      });
-
       setTimeout(() => {
         window.location.href = "/portal/";
       }, 1500);
