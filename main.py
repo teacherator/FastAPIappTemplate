@@ -50,6 +50,7 @@ def coerce_utc_datetime(value) -> datetime | None:
 
 
 PORTAL_APP = "portal"
+RESERVED_DB_NAMES = {"admin", "local", "config", "fastapi"}
 
 
 def normalize_app_name(app_name: str | None) -> str:
@@ -75,6 +76,86 @@ def user_has_app_access(user: dict, app_name: str) -> bool:
     if user.get("type") == "admin":
         return True
     return user.get("app_name") == app_name or app_name in user.get("apps", [])
+
+
+def app_name_exists(app_name: str) -> bool:
+    normalized = app_name.strip().lower()
+    apps = db.get_collection("apps")
+    if apps.find_one({"app_name": normalized}):
+        return True
+
+    db_names = {name.lower() for name in client.list_database_names()}
+    return normalized in db_names and normalized not in RESERVED_DB_NAMES
+
+
+def resolve_app_creator(app_doc: dict) -> str:
+    direct = app_doc.get("created_by")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    request_ref = app_doc.get("created_by_request")
+    if isinstance(request_ref, str) and request_ref.strip():
+        try:
+            req_doc = app_request_col.find_one({"_id": ObjectId(request_ref)})
+            if req_doc and req_doc.get("requested_by"):
+                return str(req_doc["requested_by"])
+        except (InvalidId, TypeError):
+            pass
+
+    return "unknown"
+
+
+def user_has_any_non_portal_app(user: dict) -> bool:
+    primary = normalize_app_name(user.get("app_name"))
+    if primary != PORTAL_APP:
+        return True
+    memberships = user.get("apps", [])
+    if not isinstance(memberships, list):
+        memberships = []
+    return any(str(app).strip().lower() != PORTAL_APP for app in memberships)
+
+
+def remove_app_membership_and_demote(app_name: str) -> None:
+    affected_users = list(user_col.find(app_membership_filter(app_name)))
+
+    for user in affected_users:
+        if user.get("type") == "admin":
+            user_col.update_one({"_id": user["_id"]}, {"$pull": {"apps": app_name}})
+            continue
+
+        memberships = user.get("apps", [])
+        if not isinstance(memberships, list):
+            memberships = []
+        remaining_memberships = [a for a in memberships if a != app_name]
+
+        primary = normalize_app_name(user.get("app_name"))
+        new_primary = primary
+        if primary == app_name:
+            new_primary = remaining_memberships[0] if remaining_memberships else PORTAL_APP
+
+        update_doc: dict = {
+            "$set": {
+                "apps": remaining_memberships,
+                "app_name": new_primary,
+            }
+        }
+
+        shadow_user = {
+            "app_name": new_primary,
+            "apps": remaining_memberships,
+        }
+        if user.get("type") == "developer" and not user_has_any_non_portal_app(shadow_user):
+            update_doc["$set"]["type"] = "user"
+
+        user_col.update_one({"_id": user["_id"]}, update_doc)
+
+
+def delete_app_data_and_membership(app_name: str) -> None:
+    normalized_app = app_name.strip().lower()
+    apps = db.get_collection("apps")
+    apps.delete_one({"app_name": normalized_app})
+    remove_app_membership_and_demote(normalized_app)
+    client.drop_database(normalized_app)
 
 
 # Load env variables
@@ -434,6 +515,15 @@ async def create_app(
     response: Response,
     session: SessionData = Depends(require_session),
 ):
+    normalized_app = app_name.strip().lower()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{2,49}$", normalized_app):
+        raise HTTPException(
+            status_code=400,
+            detail="App name must be 3-50 chars and contain only letters, numbers, _ or -",
+        )
+    if normalized_app in RESERVED_DB_NAMES:
+        raise HTTPException(status_code=400, detail="App name is reserved")
+
     apps = db.get_collection("apps")
 
     logged_in_user = get_logged_in_user(session)
@@ -447,7 +537,7 @@ async def create_app(
             detail="Incorrect admin password",
         )
 
-    if apps.find_one({"app_name": app_name}):
+    if app_name_exists(normalized_app):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="App name already exists",
@@ -456,11 +546,18 @@ async def create_app(
     if session.email != "admin":
         user_col.update_one(
             user_scope_query(session.email, session.app_name),
-            {"$set": {"app_name": app_name}, "$addToSet": {"apps": app_name}},
+            {"$set": {"app_name": normalized_app}, "$addToSet": {"apps": normalized_app}},
         )
 
-    new_db = client[app_name]
-    new_db.create_collection("default_collection")
+    new_db = client[normalized_app]
+    if "default_collection" not in new_db.list_collection_names():
+        new_db.create_collection("default_collection")
+
+    apps.update_one(
+        {"app_name": normalized_app},
+        {"$setOnInsert": {"app_name": normalized_app, "created_at": utcnow(), "created_by": session.email}},
+        upsert=True,
+    )
 
     return {"message": "App created successfully"}
 
@@ -477,10 +574,11 @@ async def request_app_creation(
             status_code=400,
             detail="App name must be 3-50 chars and contain only letters, numbers, _ or -",
         )
+    if requested_app in RESERVED_DB_NAMES:
+        raise HTTPException(status_code=400, detail="App name is reserved")
 
     try:
-        apps = db.get_collection("apps")
-        if apps.find_one({"app_name": requested_app}):
+        if app_name_exists(requested_app):
             raise HTTPException(status_code=400, detail="App name already exists")
 
         existing_pending = app_request_col.find_one(
@@ -590,7 +688,7 @@ async def update_app_creation_request_status(
 
     try:
         if status_value == "approved":
-            if apps.find_one({"app_name": requested_app}):
+            if app_name_exists(requested_app):
                 raise HTTPException(status_code=409, detail="App already exists")
 
             target_db = client[requested_app]
@@ -609,10 +707,12 @@ async def update_app_creation_request_status(
                 upsert=True,
             )
 
-            user_col.update_one(
-                {"email": existing.get("requested_by")},
-                {"$addToSet": {"apps": requested_app}},
-            )
+            requester = user_col.find_one({"email": existing.get("requested_by")})
+            if requester:
+                updates: dict = {"$addToSet": {"apps": requested_app}}
+                if requester.get("type") not in {"developer", "admin"}:
+                    updates["$set"] = {"type": "developer"}
+                user_col.update_one({"_id": requester["_id"]}, updates)
 
         app_request_col.update_one(
             {"_id": oid},
@@ -631,6 +731,65 @@ async def update_app_creation_request_status(
 
     updated = app_request_col.find_one({"_id": oid})
     return {"message": "Request updated", "request": serialize_app_request(updated or existing)}
+
+
+@app.get("/admin/apps")
+async def admin_list_apps(session: SessionData = Depends(require_session)):
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    apps_col = db.get_collection("apps")
+    app_docs = list(apps_col.find({}, {"_id": 0}))
+    known = {str(doc.get("app_name", "")).strip().lower() for doc in app_docs if doc.get("app_name")}
+
+    # Include legacy databases missing metadata rows.
+    for db_name in client.list_database_names():
+        normalized = db_name.strip().lower()
+        if normalized in RESERVED_DB_NAMES or normalized in known:
+            continue
+        app_docs.append({"app_name": normalized})
+
+    items = []
+    for doc in app_docs:
+        name = str(doc.get("app_name", "")).strip().lower()
+        if not name or name in RESERVED_DB_NAMES:
+            continue
+        users_count = user_col.count_documents(app_membership_filter(name))
+        items.append(
+            {
+                "app_name": name,
+                "created_by": resolve_app_creator(doc),
+                "created_at": coerce_utc_datetime(doc.get("created_at")).isoformat()
+                if coerce_utc_datetime(doc.get("created_at"))
+                else None,
+                "users_count": users_count,
+            }
+        )
+
+    items.sort(key=lambda x: x["app_name"])
+    return {"apps": items}
+
+
+@app.delete("/admin/apps/{app_name}")
+async def admin_delete_app(
+    app_name: str,
+    session: SessionData = Depends(require_session),
+):
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    normalized_app = app_name.strip().lower()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{2,49}$", normalized_app):
+        raise HTTPException(status_code=400, detail="Invalid app name")
+    if normalized_app in RESERVED_DB_NAMES or normalized_app == PORTAL_APP:
+        raise HTTPException(status_code=400, detail="This app cannot be deleted")
+    if not app_name_exists(normalized_app):
+        raise HTTPException(status_code=404, detail="App not found")
+
+    delete_app_data_and_membership(normalized_app)
+    return {"message": "App deleted successfully"}
 
 
 @app.post("/add_collection")
@@ -784,8 +943,6 @@ async def delete_app(
     response: Response,
     session: SessionData = Depends(require_session),
 ):
-    apps = db.get_collection("apps")
-
     logged_in_user = get_logged_in_user(session)
     if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
         raise HTTPException(403, "You must be logged in as an developer")
@@ -797,13 +954,14 @@ async def delete_app(
     if not user_has_app_access(logged_in_user, app_name):
         raise HTTPException(403, "You must be a developer of this app")
 
-    if not apps.find_one({"app_name": app_name}):
+    normalized_app = app_name.strip().lower()
+    if normalized_app in RESERVED_DB_NAMES or normalized_app == PORTAL_APP:
+        raise HTTPException(400, "This app cannot be deleted")
+
+    if not app_name_exists(normalized_app):
         raise HTTPException(404, "App not found")
 
-    apps.delete_one({"app_name": app_name})
-    client.drop_database(app_name)
-
-    user_col.delete_many(app_membership_filter(app_name))
+    delete_app_data_and_membership(normalized_app)
 
     return {"message": "App and associated data deleted successfully"}
 
