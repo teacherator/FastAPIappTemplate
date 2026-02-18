@@ -158,24 +158,6 @@ export default function Register() {
                         </FormItem>
                       )}
                     />
-
-                    <FormField
-                      control={form.control}
-                      name="appName"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-base">App Name (Optional)</FormLabel>
-                          <FormControl>
-                            <Input
-                              placeholder="Your app name"
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
                     <Button
                       type="submit"
                       size="lg"

@@ -237,11 +237,34 @@ async def login(
     app_name: Annotated[str | None, Form()] = None,
 ):
     scoped_app = normalize_app_name(app_name)
-    user = user_col.find_one(user_scope_query(email, scoped_app))
-    if not user or not verify_password(password, user["hashed_password"]):
+
+    if email == "admin":
+        candidates = list(user_col.find({"email": email}))
+    elif app_name is not None and app_name.strip() != "":
+        candidates = list(
+            user_col.find(
+                {
+                    "email": email,
+                    "$or": [
+                        {"app_name": scoped_app},
+                        {"apps": scoped_app},
+                    ],
+                }
+            )
+        )
+    else:
+        # Backward-compatible mode for clients that do not send app_name.
+        candidates = list(user_col.find({"email": email}))
+
+    user = next(
+        (u for u in candidates if verify_password(password, u["hashed_password"])),
+        None,
+    )
+    if not user:
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    session_id = create_session(email, user.get("app_name", scoped_app))
+    user_app = user.get("app_name") or user.get("apps", [scoped_app])[0] or scoped_app
+    session_id = create_session(email, normalize_app_name(user_app))
     cookie_do.attach_to_response(response, session_id)
 
     return {"message": "Login successful"}
