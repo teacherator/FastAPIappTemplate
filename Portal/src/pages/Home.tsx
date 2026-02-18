@@ -23,6 +23,11 @@ type AdminApp = {
   users_count: number;
 };
 
+type OwnedApp = {
+  app_name: string;
+  created_at: string | null;
+};
+
 type HomeProps = {
   email: string;
   userType: string;
@@ -37,8 +42,10 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const [isLoadingRequests, setIsLoadingRequests] = useState(false);
   const [apps, setApps] = useState<AdminApp[]>([]);
   const [isLoadingApps, setIsLoadingApps] = useState(false);
+  const [ownedApps, setOwnedApps] = useState<OwnedApp[]>([]);
+  const [isLoadingOwnedApps, setIsLoadingOwnedApps] = useState(false);
   const [deletingAppNames, setDeletingAppNames] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<"request" | "mine" | "open" | "history" | "apps">(
+  const [activeTab, setActiveTab] = useState<"request" | "mine" | "owned" | "open" | "history" | "apps">(
     userType === "admin" ? "open" : "request"
   );
   const [reviewingIds, setReviewingIds] = useState<Record<string, boolean>>({});
@@ -86,6 +93,27 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       });
     } finally {
       setIsLoadingApps(false);
+    }
+  };
+
+  const loadOwnedApps = async () => {
+    setIsLoadingOwnedApps(true);
+    try {
+      const response = await fetch("/my_owned_apps", { credentials: "include" });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to load owned apps");
+      }
+      const data = (await response.json()) as { apps: OwnedApp[] };
+      setOwnedApps(data.apps ?? []);
+    } catch (error) {
+      toast({
+        title: "Could not load owned apps",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingOwnedApps(false);
     }
   };
 
@@ -321,6 +349,18 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
               >
                 My Requests
               </Button>
+              {userType === "developer" ? (
+                <Button
+                  type="button"
+                  variant={activeTab === "owned" ? "default" : "outline"}
+                  onClick={() => {
+                    setActiveTab("owned");
+                    loadOwnedApps();
+                  }}
+                >
+                  Owned Apps
+                </Button>
+              ) : null}
             </div>
 
             {activeTab === "request" ? (
@@ -342,6 +382,20 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                   {isSubmitting ? "Submitting..." : "Submit Request"}
                 </Button>
               </form>
+            ) : activeTab === "owned" ? (
+              <div className="space-y-3">
+                {ownedApps.map((app) => (
+                  <div key={app.app_name} className="border rounded-md p-3 space-y-1">
+                    <div className="font-semibold">{app.app_name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Created at: {app.created_at ?? "unknown"}
+                    </div>
+                  </div>
+                ))}
+                {!isLoadingOwnedApps && ownedApps.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No active owned apps.</p>
+                ) : null}
+              </div>
             ) : (
               <div className="space-y-3">
                 {requests.map((request) => (

@@ -771,6 +771,35 @@ async def admin_list_apps(session: SessionData = Depends(require_session)):
     return {"apps": items}
 
 
+@app.get("/my_owned_apps")
+async def my_owned_apps(session: SessionData = Depends(require_session)):
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in {"developer", "admin"}:
+        raise HTTPException(status_code=403, detail="Developer access required")
+
+    apps_col = db.get_collection("apps")
+    app_docs = list(apps_col.find({}, {"_id": 0}))
+    owned = []
+
+    for doc in app_docs:
+        app_name = str(doc.get("app_name", "")).strip().lower()
+        if not app_name or app_name in RESERVED_DB_NAMES:
+            continue
+        if resolve_app_creator(doc) != session.email:
+            continue
+        owned.append(
+            {
+                "app_name": app_name,
+                "created_at": coerce_utc_datetime(doc.get("created_at")).isoformat()
+                if coerce_utc_datetime(doc.get("created_at"))
+                else None,
+            }
+        )
+
+    owned.sort(key=lambda x: x["app_name"])
+    return {"apps": owned}
+
+
 @app.delete("/admin/apps/{app_name}")
 async def admin_delete_app(
     app_name: str,
