@@ -74,10 +74,12 @@ user_col = db.get_collection("User_Info")
 session_collection = db.get_collection("sessions")
 
 verification_col = db.get_collection("email_verification")
+app_request_col = db.get_collection("app_creation_requests")
 
 verification_col.create_index("created_at", expireAfterSeconds=600)
 
 session_collection.create_index("expires_at", expireAfterSeconds=0)
+app_request_col.create_index("created_at")
 
 try:
     client.admin.command("ping")
@@ -424,6 +426,47 @@ async def create_app(
     new_db.create_collection("default_collection")
 
     return {"message": "App created successfully"}
+
+
+@app.post("/request_app_creation")
+async def request_app_creation(
+    app_name: Annotated[str, Form()],
+    reason: Annotated[str | None, Form()] = None,
+    session: SessionData = Depends(require_session),
+):
+    requested_app = app_name.strip().lower()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{2,49}$", requested_app):
+        raise HTTPException(
+            status_code=400,
+            detail="App name must be 3-50 chars and contain only letters, numbers, _ or -",
+        )
+
+    apps = db.get_collection("apps")
+    if apps.find_one({"app_name": requested_app}):
+        raise HTTPException(status_code=400, detail="App name already exists")
+
+    existing_pending = app_request_col.find_one(
+        {
+            "requested_app_name": requested_app,
+            "requested_by": session.email,
+            "status": "pending",
+        }
+    )
+    if existing_pending:
+        raise HTTPException(status_code=409, detail="You already have a pending request for this app")
+
+    app_request_col.insert_one(
+        {
+            "requested_app_name": requested_app,
+            "requested_by": session.email,
+            "requested_from_app": session.app_name,
+            "reason": (reason or "").strip(),
+            "status": "pending",
+            "created_at": utcnow(),
+        }
+    )
+
+    return {"message": "App creation request submitted"}
 
 
 @app.post("/add_collection")
