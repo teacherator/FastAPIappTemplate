@@ -38,9 +38,18 @@ export default function App() {
   }, []);
 
   const handleLogout = () => {
-    localStorage.removeItem("email");
-    setSessionUser(null);
-    window.location.href = "/portal/";
+    void (async () => {
+      try {
+        await fetch("/logout", {
+          method: "POST",
+          credentials: "include",
+        });
+      } finally {
+        localStorage.removeItem("email");
+        setSessionUser(null);
+        window.location.href = "/portal/";
+      }
+    })();
   };
 
   return (
