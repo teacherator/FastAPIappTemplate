@@ -11,6 +11,7 @@ from pwdlib import PasswordHash
 from dotenv import load_dotenv
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
+from pymongo.errors import DuplicateKeyError, PyMongoError
 import certifi
 import smtplib, ssl
 from email.mime.text import MIMEText
@@ -441,30 +442,36 @@ async def request_app_creation(
             detail="App name must be 3-50 chars and contain only letters, numbers, _ or -",
         )
 
-    apps = db.get_collection("apps")
-    if apps.find_one({"app_name": requested_app}):
-        raise HTTPException(status_code=400, detail="App name already exists")
+    try:
+        apps = db.get_collection("apps")
+        if apps.find_one({"app_name": requested_app}):
+            raise HTTPException(status_code=400, detail="App name already exists")
 
-    existing_pending = app_request_col.find_one(
-        {
-            "requested_app_name": requested_app,
-            "requested_by": session.email,
-            "status": "pending",
-        }
-    )
-    if existing_pending:
-        raise HTTPException(status_code=409, detail="You already have a pending request for this app")
+        existing_pending = app_request_col.find_one(
+            {
+                "requested_app_name": requested_app,
+                "requested_by": session.email,
+                "status": "pending",
+            }
+        )
+        if existing_pending:
+            raise HTTPException(status_code=409, detail="You already have a pending request for this app")
 
-    app_request_col.insert_one(
-        {
-            "requested_app_name": requested_app,
-            "requested_by": session.email,
-            "requested_from_app": session.app_name,
-            "reason": (reason or "").strip(),
-            "status": "pending",
-            "created_at": utcnow(),
-        }
-    )
+        app_request_col.insert_one(
+            {
+                "requested_app_name": requested_app,
+                "requested_by": session.email,
+                "requested_from_app": session.app_name,
+                "reason": (reason or "").strip(),
+                "status": "pending",
+                "created_at": utcnow(),
+            }
+        )
+    except DuplicateKeyError:
+        # Handles existing unique indexes on request fields in older deployments.
+        raise HTTPException(status_code=409, detail="An equivalent app request already exists")
+    except PyMongoError:
+        raise HTTPException(status_code=503, detail="Database error while submitting request")
 
     return {"message": "App creation request submitted"}
 
