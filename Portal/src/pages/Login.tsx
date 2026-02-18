@@ -15,7 +15,7 @@ import {
 } 
 from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, LogIn, CheckCircle2} from "lucide-react";
+import { Loader2, CheckCircle2} from "lucide-react";
 import { Link } from "wouter";
 
 const loginSchema = z.object({
