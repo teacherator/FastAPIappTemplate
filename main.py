@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from pymongo.errors import DuplicateKeyError, PyMongoError
+from bson import ObjectId
+from bson.errors import InvalidId
 import certifi
 import smtplib, ssl
 from email.mime.text import MIMEText
@@ -408,7 +410,12 @@ async def verify_email(
 
 @app.get("/me")
 async def me(session: SessionData = Depends(require_session)):
-    return {"email": session.email, "app_name": session.app_name}
+    logged_in_user = get_logged_in_user(session)
+    return {
+        "email": session.email,
+        "app_name": session.app_name,
+        "type": (logged_in_user or {}).get("type", "user"),
+    }
 
 
 @app.post("/logout")
@@ -504,6 +511,127 @@ async def request_app_creation(
         raise HTTPException(status_code=503, detail="Database error while submitting request")
 
     return {"message": "App creation request submitted"}
+
+
+def serialize_app_request(doc: dict) -> dict:
+    created_at = coerce_utc_datetime(doc.get("created_at"))
+    reviewed_at = coerce_utc_datetime(doc.get("reviewed_at"))
+    return {
+        "id": str(doc.get("_id")),
+        "requested_app_name": doc.get("requested_app_name", ""),
+        "requested_by": doc.get("requested_by", ""),
+        "requested_from_app": doc.get("requested_from_app", PORTAL_APP),
+        "reason": doc.get("reason", ""),
+        "status": doc.get("status", "pending"),
+        "created_at": created_at.isoformat() if created_at else None,
+        "reviewed_at": reviewed_at.isoformat() if reviewed_at else None,
+        "reviewed_by": doc.get("reviewed_by"),
+    }
+
+
+@app.get("/app_creation_requests")
+async def list_app_creation_requests(
+    status_filter: str | None = None,
+    session: SessionData = Depends(require_session),
+):
+    logged_in_user = get_logged_in_user(session)
+    user_type = (logged_in_user or {}).get("type", "user")
+    is_admin = user_type == "admin"
+
+    query: dict = {}
+    if status_filter:
+        if status_filter not in {"pending", "approved", "denied"}:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        query["status"] = status_filter
+
+    if not is_admin:
+        query["requested_by"] = session.email
+
+    try:
+        docs = list(app_request_col.find(query).sort("created_at", -1).limit(500))
+    except PyMongoError:
+        raise HTTPException(status_code=503, detail="Database error while fetching requests")
+
+    return {
+        "is_admin": is_admin,
+        "requests": [serialize_app_request(doc) for doc in docs],
+    }
+
+
+@app.post("/app_creation_requests/{request_id}/status")
+async def update_app_creation_request_status(
+    request_id: str,
+    status_value: Annotated[str, Form(alias="status")],
+    session: SessionData = Depends(require_session),
+):
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    if status_value not in {"approved", "denied"}:
+        raise HTTPException(status_code=400, detail="Status must be approved or denied")
+
+    try:
+        oid = ObjectId(request_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid request id")
+
+    existing = app_request_col.find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if existing.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="Request is already reviewed")
+
+    requested_app = existing.get("requested_app_name", "").strip().lower()
+    if not requested_app:
+        raise HTTPException(status_code=400, detail="Request is missing app name")
+
+    apps = db.get_collection("apps")
+    now = utcnow()
+
+    try:
+        if status_value == "approved":
+            if apps.find_one({"app_name": requested_app}):
+                raise HTTPException(status_code=409, detail="App already exists")
+
+            target_db = client[requested_app]
+            if "default_collection" not in target_db.list_collection_names():
+                target_db.create_collection("default_collection")
+
+            apps.update_one(
+                {"app_name": requested_app},
+                {
+                    "$setOnInsert": {
+                        "app_name": requested_app,
+                        "created_at": now,
+                        "created_by_request": str(oid),
+                    }
+                },
+                upsert=True,
+            )
+
+            user_col.update_one(
+                {"email": existing.get("requested_by")},
+                {"$addToSet": {"apps": requested_app}},
+            )
+
+        app_request_col.update_one(
+            {"_id": oid},
+            {
+                "$set": {
+                    "status": status_value,
+                    "reviewed_at": now,
+                    "reviewed_by": session.email,
+                }
+            },
+        )
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="App already exists")
+    except PyMongoError:
+        raise HTTPException(status_code=503, detail="Database error while reviewing request")
+
+    updated = app_request_col.find_one({"_id": oid})
+    return {"message": "Request updated", "request": serialize_app_request(updated or existing)}
 
 
 @app.post("/add_collection")
