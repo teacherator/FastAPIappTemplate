@@ -32,6 +32,22 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def coerce_utc_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 PORTAL_APP = "portal"
 
 
@@ -185,12 +201,23 @@ def read_session(session_id: UUID) -> SessionData | None:
     if not doc:
         return None
 
-    expires_at = doc.get("expires_at")
+    expires_at = coerce_utc_datetime(doc.get("expires_at"))
     if not expires_at:
         return None
 
-    # If expired, clean up and treat as missing
-    if expires_at < utcnow():
+    # If expired, clean up and treat as missing.
+    # Defensive fallback for any legacy/odd datetime representation.
+    try:
+        is_expired = expires_at < utcnow()
+    except TypeError:
+        normalized = coerce_utc_datetime(expires_at)
+        if not normalized:
+            session_collection.delete_one({"_id": str(session_id)})
+            return None
+        expires_at = normalized
+        is_expired = expires_at < utcnow()
+
+    if is_expired:
         session_collection.delete_one({"_id": str(session_id)})
         return None
 
@@ -228,7 +255,10 @@ def get_logged_in_user(session: SessionData):
 
 @app.get("/")
 async def root():
-    routes = [{"path": route.path, "methods": list(route.methods)} for route in app.routes]
+    routes = [
+        {"path": route.path, "methods": sorted(list(getattr(route, "methods", []) or []))}
+        for route in app.routes
+    ]
     return {"message": "API is running", "routes": routes}
 
 
