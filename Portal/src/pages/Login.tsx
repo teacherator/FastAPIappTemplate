@@ -123,9 +123,6 @@ export default function Login() {
               <>
                 {/* Header */}
                 <div className="text-center space-y-4 mb-10">
-                  <div className="mx-auto w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-                    <LogIn className="h-8 w-8 text-primary" />
-                  </div>
                   <div>
                     <h1 className="text-4xl font-display font-bold mb-2">
                       Welcome Back
@@ -218,11 +215,6 @@ export default function Login() {
             )}
           </CardContent>
         </Card>
-
-        {/* Trust Badge */}
-        <p className="mt-8 text-sm text-muted-foreground">
-          Secure login • Your data is protected
-        </p>
       </div>
     </div>
   );
