@@ -120,11 +120,8 @@ export default function Login() {
                 <div className="text-center space-y-4 mb-10">
                   <div>
                     <h1 className="text-4xl font-display font-bold mb-2">
-                      Welcome Back
+                      Sign in
                     </h1>
-                    <p className="text-muted-foreground text-lg">
-                      Sign in to your SizeBud account
-                    </p>
                   </div>
                 </div>
 
