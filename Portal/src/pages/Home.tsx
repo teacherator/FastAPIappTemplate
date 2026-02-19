@@ -28,6 +28,29 @@ type OwnedApp = {
   created_at: string | null;
 };
 
+type OwnedAppDetails = {
+  app: {
+    app_name: string;
+    created_by: string;
+    created_at: string | null;
+    collections_count: number;
+    members_count: number;
+  };
+  collections: string[];
+  members: Array<{
+    email: string;
+    type: string;
+    primary_app: string;
+  }>;
+};
+
+type AdminUser = {
+  email: string;
+  type: string;
+  app_name?: string;
+  apps?: string[];
+};
+
 type HomeProps = {
   email: string;
   userType: string;
@@ -44,10 +67,26 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const [isLoadingApps, setIsLoadingApps] = useState(false);
   const [ownedApps, setOwnedApps] = useState<OwnedApp[]>([]);
   const [isLoadingOwnedApps, setIsLoadingOwnedApps] = useState(false);
-  const [deletingAppNames, setDeletingAppNames] = useState<Record<string, boolean>>({});
-  const [activeTab, setActiveTab] = useState<"request" | "mine" | "owned" | "open" | "history" | "apps">(
-    userType === "admin" ? "open" : "request"
+  const [selectedOwnedApp, setSelectedOwnedApp] = useState<string | null>(null);
+  const [ownedAppSubtab, setOwnedAppSubtab] = useState<"overview" | "collections" | "objects" | "members">(
+    "overview"
   );
+  const [ownedAppDetails, setOwnedAppDetails] = useState<OwnedAppDetails | null>(null);
+  const [isLoadingOwnedAppDetails, setIsLoadingOwnedAppDetails] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [objectCollection, setObjectCollection] = useState("");
+  const [objectUserId, setObjectUserId] = useState("");
+  const [objectJson, setObjectJson] = useState("{}");
+  const [deleteObjectCollection, setDeleteObjectCollection] = useState("");
+  const [deleteObjectUserId, setDeleteObjectUserId] = useState("");
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [adminUsersFilterApp, setAdminUsersFilterApp] = useState("");
+  const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
+  const [newAdminAppName, setNewAdminAppName] = useState("");
+  const [deletingAppNames, setDeletingAppNames] = useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = useState<
+    "request" | "mine" | "owned" | "open" | "history" | "apps" | "create" | "users"
+  >(userType === "admin" ? "open" : "request");
   const [reviewingIds, setReviewingIds] = useState<Record<string, boolean>>({});
   const { toast } = useToast();
 
@@ -105,7 +144,19 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
         throw new Error(errorData.detail || "Failed to load owned apps");
       }
       const data = (await response.json()) as { apps: OwnedApp[] };
-      setOwnedApps(data.apps ?? []);
+      const appsData = data.apps ?? [];
+      setOwnedApps(appsData);
+      if (!appsData.length) {
+        setSelectedOwnedApp(null);
+        setOwnedAppDetails(null);
+        return;
+      }
+      const keepSelected = selectedOwnedApp && appsData.some((a) => a.app_name === selectedOwnedApp);
+      const nextSelected = keepSelected ? selectedOwnedApp : appsData[0].app_name;
+      setSelectedOwnedApp(nextSelected);
+      if (nextSelected) {
+        loadOwnedAppDetails(nextSelected);
+      }
     } catch (error) {
       toast({
         title: "Could not load owned apps",
@@ -114,6 +165,256 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       });
     } finally {
       setIsLoadingOwnedApps(false);
+    }
+  };
+
+  const loadOwnedAppDetails = async (targetAppName: string) => {
+    setIsLoadingOwnedAppDetails(true);
+    try {
+      const response = await fetch(`/my_owned_apps/${encodeURIComponent(targetAppName)}/details`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to load app details");
+      }
+      const data = (await response.json()) as OwnedAppDetails;
+      setOwnedAppDetails(data);
+    } catch (error) {
+      toast({
+        title: "Could not load app details",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+      setOwnedAppDetails(null);
+    } finally {
+      setIsLoadingOwnedAppDetails(false);
+    }
+  };
+
+  const loadAdminUsers = async (appFilter?: string) => {
+    setIsLoadingAdminUsers(true);
+    try {
+      const q = appFilter?.trim() ? `?app_name=${encodeURIComponent(appFilter.trim())}` : "";
+      const response = await fetch(`/admin/users${q}`, { credentials: "include" });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to load users");
+      }
+      const data = (await response.json()) as { users: AdminUser[] };
+      setAdminUsers(data.users ?? []);
+    } catch (error) {
+      toast({
+        title: "Could not load users",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingAdminUsers(false);
+    }
+  };
+
+  const createAdminApp = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    try {
+      const formData = new FormData();
+      formData.append("app_name", newAdminAppName);
+      const response = await fetch("/admin/create_app", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to create app");
+      }
+      setNewAdminAppName("");
+      toast({ title: "App created", description: "New app created successfully." });
+      loadApps();
+    } catch (error) {
+      toast({
+        title: "Create app failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const adminSetUserRole = async (targetEmail: string, newRole: "user" | "developer" | "admin") => {
+    try {
+      const formData = new FormData();
+      formData.append("target_email", targetEmail);
+      formData.append("new_type", newRole);
+      if (adminUsersFilterApp.trim()) {
+        formData.append("app_name", adminUsersFilterApp.trim());
+      }
+      const response = await fetch("/admin/users/role", {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to update user role");
+      }
+      toast({ title: "Role updated", description: `${targetEmail} is now ${newRole}.` });
+      loadAdminUsers(adminUsersFilterApp);
+    } catch (error) {
+      toast({
+        title: "Role update failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const addOwnedCollection = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedOwnedApp) return;
+    try {
+      const formData = new FormData();
+      formData.append("collection_name", newCollectionName);
+      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/collections`, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to add collection");
+      }
+      setNewCollectionName("");
+      toast({ title: "Collection created", description: "Collection added successfully." });
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Collection create failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const deleteOwnedCollection = async (collectionName: string) => {
+    if (!selectedOwnedApp) return;
+    try {
+      const response = await fetch(
+        `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/collections/${encodeURIComponent(collectionName)}`,
+        { method: "DELETE", credentials: "include" }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to delete collection");
+      }
+      toast({ title: "Collection deleted", description: `${collectionName} removed.` });
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Delete collection failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const upsertOwnedObject = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedOwnedApp) return;
+    try {
+      const formData = new FormData();
+      formData.append("collection_name", objectCollection);
+      formData.append("userId", objectUserId);
+      formData.append("obj", objectJson);
+      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects/upsert`, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to upsert object");
+      }
+      toast({ title: "Object saved", description: "Object upsert completed." });
+    } catch (error) {
+      toast({
+        title: "Object upsert failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const deleteOwnedObject = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedOwnedApp) return;
+    try {
+      const query = `?collection_name=${encodeURIComponent(deleteObjectCollection)}&user_id=${encodeURIComponent(deleteObjectUserId)}`;
+      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects${query}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to delete object");
+      }
+      toast({ title: "Object deleted", description: "Object removed." });
+    } catch (error) {
+      toast({
+        title: "Delete object failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const setOwnedUserRole = async (targetEmail: string, newRole: "user" | "developer") => {
+    if (!selectedOwnedApp) return;
+    try {
+      const formData = new FormData();
+      formData.append("target_email", targetEmail);
+      formData.append("new_type", newRole);
+      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/users/role`, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to update role");
+      }
+      toast({ title: "Role updated", description: `${targetEmail} is now ${newRole}.` });
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Role update failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const removeOwnedUser = async (targetEmail: string) => {
+    if (!selectedOwnedApp) return;
+    try {
+      const response = await fetch(
+        `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/users/${encodeURIComponent(targetEmail)}`,
+        {
+          method: "DELETE",
+          credentials: "include",
+        }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to remove user");
+      }
+      toast({ title: "User removed", description: `${targetEmail} removed from app.` });
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Remove user failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
     }
   };
 
@@ -264,6 +565,23 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
               >
                 Apps
               </Button>
+              <Button
+                type="button"
+                variant={activeTab === "create" ? "default" : "outline"}
+                onClick={() => setActiveTab("create")}
+              >
+                Create App
+              </Button>
+              <Button
+                type="button"
+                variant={activeTab === "users" ? "default" : "outline"}
+                onClick={() => {
+                  setActiveTab("users");
+                  loadAdminUsers(adminUsersFilterApp);
+                }}
+              >
+                Users
+              </Button>
             </div>
 
             {activeTab === "apps" ? (
@@ -289,6 +607,56 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                 ))}
                 {!isLoadingApps && apps.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No apps to show.</p>
+                ) : null}
+              </div>
+            ) : activeTab === "create" ? (
+              <form onSubmit={createAdminApp} className="space-y-3">
+                <h3 className="text-lg font-semibold">Create App</h3>
+                <Input
+                  value={newAdminAppName}
+                  onChange={(e) => setNewAdminAppName(e.target.value)}
+                  placeholder="App name"
+                  required
+                />
+                <Button type="submit">Create</Button>
+              </form>
+            ) : activeTab === "users" ? (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <Input
+                    value={adminUsersFilterApp}
+                    onChange={(e) => setAdminUsersFilterApp(e.target.value)}
+                    placeholder="Filter by app name (optional)"
+                  />
+                  <Button type="button" onClick={() => loadAdminUsers(adminUsersFilterApp)}>
+                    Load
+                  </Button>
+                </div>
+                {adminUsers.map((u) => (
+                  <div key={`${u.email}-${u.app_name ?? "na"}`} className="border rounded-md p-3 space-y-2">
+                    <div className="font-medium">{u.email}</div>
+                    <div className="text-sm text-muted-foreground">
+                      role: {u.type} | primary: {u.app_name ?? "portal"}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button type="button" variant="outline" onClick={() => adminSetUserRole(u.email, "user")}>
+                        Set User
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => adminSetUserRole(u.email, "developer")}
+                      >
+                        Set Developer
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => adminSetUserRole(u.email, "admin")}>
+                        Set Admin
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {!isLoadingAdminUsers && adminUsers.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No users to show.</p>
                 ) : null}
               </div>
             ) : (
@@ -383,17 +751,185 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                 </Button>
               </form>
             ) : activeTab === "owned" ? (
-              <div className="space-y-3">
-                {ownedApps.map((app) => (
-                  <div key={app.app_name} className="border rounded-md p-3 space-y-1">
-                    <div className="font-semibold">{app.app_name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Created at: {app.created_at ?? "unknown"}
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  {ownedApps.map((app) => (
+                    <Button
+                      key={app.app_name}
+                      type="button"
+                      variant={selectedOwnedApp === app.app_name ? "default" : "outline"}
+                      onClick={() => {
+                        setSelectedOwnedApp(app.app_name);
+                        setOwnedAppSubtab("overview");
+                        loadOwnedAppDetails(app.app_name);
+                      }}
+                    >
+                      {app.app_name}
+                    </Button>
+                  ))}
+                </div>
                 {!isLoadingOwnedApps && ownedApps.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No active owned apps.</p>
+                ) : null}
+                {selectedOwnedApp && ownedAppDetails ? (
+                  <div className="border rounded-md p-3 space-y-3">
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "overview" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("overview")}
+                      >
+                        Overview
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "collections" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("collections")}
+                      >
+                        Collections
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "objects" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("objects")}
+                      >
+                        Objects
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "members" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("members")}
+                      >
+                        Members
+                      </Button>
+                    </div>
+
+                    {ownedAppSubtab === "overview" ? (
+                      <div className="space-y-1 text-sm">
+                        <div>
+                          <span className="font-medium">App:</span> {ownedAppDetails.app.app_name}
+                        </div>
+                        <div>
+                          <span className="font-medium">Created by:</span> {ownedAppDetails.app.created_by}
+                        </div>
+                        <div>
+                          <span className="font-medium">Created at:</span>{" "}
+                          {ownedAppDetails.app.created_at ?? "unknown"}
+                        </div>
+                        <div>
+                          <span className="font-medium">Collections:</span>{" "}
+                          {ownedAppDetails.app.collections_count}
+                        </div>
+                        <div>
+                          <span className="font-medium">Members:</span> {ownedAppDetails.app.members_count}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "collections" ? (
+                      <div className="space-y-2">
+                        <form onSubmit={addOwnedCollection} className="flex gap-2">
+                          <Input
+                            value={newCollectionName}
+                            onChange={(e) => setNewCollectionName(e.target.value)}
+                            placeholder="New collection name"
+                            required
+                          />
+                          <Button type="submit">Add</Button>
+                        </form>
+                        {ownedAppDetails.collections.map((col) => (
+                          <div key={col} className="text-sm border rounded px-2 py-2 flex justify-between items-center">
+                            <span>{col}</span>
+                            <Button type="button" variant="destructive" onClick={() => deleteOwnedCollection(col)}>
+                              Delete
+                            </Button>
+                          </div>
+                        ))}
+                        {ownedAppDetails.collections.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No collections.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "objects" ? (
+                      <div className="space-y-3">
+                        <form onSubmit={upsertOwnedObject} className="space-y-2 border rounded p-3">
+                          <div className="font-medium">Upsert Object</div>
+                          <Input
+                            value={objectCollection}
+                            onChange={(e) => setObjectCollection(e.target.value)}
+                            placeholder="Collection name"
+                            required
+                          />
+                          <Input
+                            value={objectUserId}
+                            onChange={(e) => setObjectUserId(e.target.value)}
+                            placeholder="userId"
+                            required
+                          />
+                          <textarea
+                            value={objectJson}
+                            onChange={(e) => setObjectJson(e.target.value)}
+                            className="w-full min-h-24 rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+                            placeholder='JSON object, e.g. {"plan":"pro"}'
+                          />
+                          <Button type="submit">Save Object</Button>
+                        </form>
+
+                        <form onSubmit={deleteOwnedObject} className="space-y-2 border rounded p-3">
+                          <div className="font-medium">Delete Object</div>
+                          <Input
+                            value={deleteObjectCollection}
+                            onChange={(e) => setDeleteObjectCollection(e.target.value)}
+                            placeholder="Collection name"
+                            required
+                          />
+                          <Input
+                            value={deleteObjectUserId}
+                            onChange={(e) => setDeleteObjectUserId(e.target.value)}
+                            placeholder="userId"
+                            required
+                          />
+                          <Button type="submit" variant="destructive">
+                            Delete Object
+                          </Button>
+                        </form>
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "members" ? (
+                      <div className="space-y-2">
+                        {ownedAppDetails.members.map((member) => (
+                          <div key={member.email} className="text-sm border rounded px-2 py-2 space-y-2">
+                            <div>
+                              {member.email} | {member.type} | primary: {member.primary_app}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button type="button" variant="outline" onClick={() => setOwnedUserRole(member.email, "user")}>
+                                Set User
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setOwnedUserRole(member.email, "developer")}
+                              >
+                                Set Developer
+                              </Button>
+                              <Button type="button" variant="destructive" onClick={() => removeOwnedUser(member.email)}>
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                        {ownedAppDetails.members.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No members.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {isLoadingOwnedAppDetails ? (
+                  <p className="text-sm text-muted-foreground">Loading app details...</p>
                 ) : null}
               </div>
             ) : (
