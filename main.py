@@ -99,7 +99,7 @@ def normalize_existing_app_or_404(app_name: str) -> str:
     return normalized_app
 
 
-def require_app_owner_or_admin(app_name: str, session: SessionData) -> tuple[str, dict]:
+def require_app_owner_or_admin(app_name: str, session: "SessionData") -> tuple[str, dict]:
     logged_in_user = get_logged_in_user(session)
     if not logged_in_user or logged_in_user.get("type") not in {"developer", "admin"}:
         raise HTTPException(status_code=403, detail="Developer access required")
