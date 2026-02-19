@@ -22,7 +22,6 @@ from datetime import datetime, timedelta, timezone
 import re
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
