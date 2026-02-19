@@ -848,8 +848,21 @@ async def admin_list_users(
         query = app_membership_filter(normalized)
 
     docs = list(user_col.find(query, {"_id": 0, "email": 1, "type": 1, "app_name": 1, "apps": 1}).limit(1000))
-    docs.sort(key=lambda x: x.get("email", ""))
-    return {"users": docs}
+    rows = []
+    for d in docs:
+        apps_value = d.get("apps", [])
+        if not isinstance(apps_value, list):
+            apps_value = []
+        rows.append(
+            {
+                "email": str(d.get("email", "")),
+                "type": str(d.get("type", "user")),
+                "app_name": normalize_app_name(d.get("app_name")),
+                "apps": [str(a) for a in apps_value],
+            }
+        )
+    rows.sort(key=lambda x: x.get("email", ""))
+    return {"users": rows}
 
 
 @app.post("/admin/users/role")
@@ -1045,9 +1058,11 @@ async def owned_app_change_user_role(
     new_type: Annotated[str, Form()],
     session: SessionData = Depends(require_session),
 ):
-    normalized_app, _ = require_app_owner_or_admin(app_name, session)
+    normalized_app, actor = require_app_owner_or_admin(app_name, session)
     if new_type not in {"user", "developer"}:
         raise HTTPException(status_code=400, detail="Invalid user type")
+    if new_type == "developer" and actor.get("type") != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can promote users to developer")
 
     target = user_col.find_one({"email": target_email, **app_membership_filter(normalized_app)})
     if not target:
@@ -1057,6 +1072,37 @@ async def owned_app_change_user_role(
 
     user_col.update_one({"_id": target["_id"]}, {"$set": {"type": new_type}})
     return {"message": "User role updated"}
+
+
+@app.post("/my_owned_apps/{app_name}/transfer_ownership")
+async def owned_app_transfer_ownership(
+    app_name: str,
+    new_owner_email: Annotated[str, Form()],
+    session: SessionData = Depends(require_session),
+):
+    normalized_app, actor = require_app_owner_or_admin(app_name, session)
+    app_doc = db.get_collection("apps").find_one({"app_name": normalized_app})
+    if not app_doc:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    target_user = user_col.find_one({"email": new_owner_email, **app_membership_filter(normalized_app)})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="New owner not found in app")
+
+    if actor.get("type") != "admin" and resolve_app_creator(app_doc) != session.email:
+        raise HTTPException(status_code=403, detail="Only owner or admin can transfer ownership")
+
+    db.get_collection("apps").update_one(
+        {"_id": app_doc["_id"]},
+        {"$set": {"created_by": new_owner_email, "ownership_transferred_at": utcnow()}},
+    )
+
+    user_updates: dict = {"$addToSet": {"apps": normalized_app}}
+    if target_user.get("type") not in {"developer", "admin"}:
+        user_updates["$set"] = {"type": "developer"}
+    user_col.update_one({"_id": target_user["_id"]}, user_updates)
+
+    return {"message": "Ownership transferred successfully", "app_name": normalized_app, "new_owner": new_owner_email}
 
 
 @app.delete("/my_owned_apps/{app_name}/users/{target_email}")

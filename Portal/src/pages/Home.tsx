@@ -68,9 +68,9 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const [ownedApps, setOwnedApps] = useState<OwnedApp[]>([]);
   const [isLoadingOwnedApps, setIsLoadingOwnedApps] = useState(false);
   const [selectedOwnedApp, setSelectedOwnedApp] = useState<string | null>(null);
-  const [ownedAppSubtab, setOwnedAppSubtab] = useState<"overview" | "collections" | "objects" | "members">(
-    "overview"
-  );
+  const [ownedAppSubtab, setOwnedAppSubtab] = useState<
+    "overview" | "collections" | "objects" | "members" | "ownership"
+  >("overview");
   const [ownedAppDetails, setOwnedAppDetails] = useState<OwnedAppDetails | null>(null);
   const [isLoadingOwnedAppDetails, setIsLoadingOwnedAppDetails] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState("");
@@ -83,6 +83,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const [adminUsersFilterApp, setAdminUsersFilterApp] = useState("");
   const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
   const [newAdminAppName, setNewAdminAppName] = useState("");
+  const [newOwnerEmail, setNewOwnerEmail] = useState("");
   const [deletingAppNames, setDeletingAppNames] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<
     "request" | "mine" | "owned" | "open" | "history" | "apps" | "create" | "users"
@@ -418,6 +419,41 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     }
   };
 
+  const transferOwnedAppOwnership = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedOwnedApp) return;
+    try {
+      const formData = new FormData();
+      formData.append("new_owner_email", newOwnerEmail);
+      const response = await fetch(
+        `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/transfer_ownership`,
+        {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+        }
+      );
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to transfer ownership");
+      }
+      toast({ title: "Ownership transferred", description: `Owner changed to ${newOwnerEmail}.` });
+      setNewOwnerEmail("");
+      if (userType === "admin") {
+        loadApps();
+      } else {
+        loadOwnedApps();
+      }
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Transfer failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    }
+  };
+
   const submitRequest = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -597,6 +633,17 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                     </div>
                     <Button
                       type="button"
+                      variant={selectedOwnedApp === app.app_name ? "default" : "outline"}
+                      onClick={() => {
+                        setSelectedOwnedApp(app.app_name);
+                        setOwnedAppSubtab("overview");
+                        loadOwnedAppDetails(app.app_name);
+                      }}
+                    >
+                      Manage
+                    </Button>
+                    <Button
+                      type="button"
                       variant="destructive"
                       onClick={() => deleteApp(app.app_name)}
                       disabled={!!deletingAppNames[app.app_name]}
@@ -607,6 +654,183 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                 ))}
                 {!isLoadingApps && apps.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No apps to show.</p>
+                ) : null}
+                {selectedOwnedApp && ownedAppDetails ? (
+                  <div className="border rounded-md p-3 space-y-3">
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "overview" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("overview")}
+                      >
+                        Overview
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "collections" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("collections")}
+                      >
+                        Collections
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "objects" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("objects")}
+                      >
+                        Objects
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "members" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("members")}
+                      >
+                        Members
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "ownership" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("ownership")}
+                      >
+                        Ownership
+                      </Button>
+                    </div>
+
+                    {ownedAppSubtab === "overview" ? (
+                      <div className="space-y-1 text-sm">
+                        <div>
+                          <span className="font-medium">App:</span> {ownedAppDetails.app.app_name}
+                        </div>
+                        <div>
+                          <span className="font-medium">Created by:</span> {ownedAppDetails.app.created_by}
+                        </div>
+                        <div>
+                          <span className="font-medium">Created at:</span>{" "}
+                          {ownedAppDetails.app.created_at ?? "unknown"}
+                        </div>
+                        <div>
+                          <span className="font-medium">Collections:</span>{" "}
+                          {ownedAppDetails.app.collections_count}
+                        </div>
+                        <div>
+                          <span className="font-medium">Members:</span> {ownedAppDetails.app.members_count}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "collections" ? (
+                      <div className="space-y-2">
+                        <form onSubmit={addOwnedCollection} className="flex gap-2">
+                          <Input
+                            value={newCollectionName}
+                            onChange={(e) => setNewCollectionName(e.target.value)}
+                            placeholder="New collection name"
+                            required
+                          />
+                          <Button type="submit">Add</Button>
+                        </form>
+                        {ownedAppDetails.collections.map((col) => (
+                          <div key={col} className="text-sm border rounded px-2 py-2 flex justify-between items-center">
+                            <span>{col}</span>
+                            <Button type="button" variant="destructive" onClick={() => deleteOwnedCollection(col)}>
+                              Delete
+                            </Button>
+                          </div>
+                        ))}
+                        {ownedAppDetails.collections.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No collections.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "objects" ? (
+                      <div className="space-y-3">
+                        <form onSubmit={upsertOwnedObject} className="space-y-2 border rounded p-3">
+                          <div className="font-medium">Upsert Object</div>
+                          <Input
+                            value={objectCollection}
+                            onChange={(e) => setObjectCollection(e.target.value)}
+                            placeholder="Collection name"
+                            required
+                          />
+                          <Input
+                            value={objectUserId}
+                            onChange={(e) => setObjectUserId(e.target.value)}
+                            placeholder="userId"
+                            required
+                          />
+                          <textarea
+                            value={objectJson}
+                            onChange={(e) => setObjectJson(e.target.value)}
+                            className="w-full min-h-24 rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm"
+                            placeholder='JSON object, e.g. {"plan":"pro"}'
+                          />
+                          <Button type="submit">Save Object</Button>
+                        </form>
+
+                        <form onSubmit={deleteOwnedObject} className="space-y-2 border rounded p-3">
+                          <div className="font-medium">Delete Object</div>
+                          <Input
+                            value={deleteObjectCollection}
+                            onChange={(e) => setDeleteObjectCollection(e.target.value)}
+                            placeholder="Collection name"
+                            required
+                          />
+                          <Input
+                            value={deleteObjectUserId}
+                            onChange={(e) => setDeleteObjectUserId(e.target.value)}
+                            placeholder="userId"
+                            required
+                          />
+                          <Button type="submit" variant="destructive">
+                            Delete Object
+                          </Button>
+                        </form>
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "members" ? (
+                      <div className="space-y-2">
+                        {ownedAppDetails.members.map((member) => (
+                          <div key={member.email} className="text-sm border rounded px-2 py-2 space-y-2">
+                            <div>
+                              {member.email} | {member.type} | primary: {member.primary_app}
+                            </div>
+                            <div className="flex gap-2">
+                              <Button type="button" variant="outline" onClick={() => setOwnedUserRole(member.email, "user")}>
+                                Set User
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() => setOwnedUserRole(member.email, "developer")}
+                              >
+                                Set Developer
+                              </Button>
+                              <Button type="button" variant="destructive" onClick={() => removeOwnedUser(member.email)}>
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                        {ownedAppDetails.members.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No members.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "ownership" ? (
+                      <form onSubmit={transferOwnedAppOwnership} className="space-y-2 border rounded p-3">
+                        <div className="font-medium">Transfer Ownership</div>
+                        <Input
+                          value={newOwnerEmail}
+                          onChange={(e) => setNewOwnerEmail(e.target.value)}
+                          placeholder="New owner email"
+                          required
+                        />
+                        <Button type="submit">Transfer</Button>
+                      </form>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ) : activeTab === "create" ? (
@@ -802,6 +1026,13 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                       >
                         Members
                       </Button>
+                      <Button
+                        type="button"
+                        variant={ownedAppSubtab === "ownership" ? "default" : "outline"}
+                        onClick={() => setOwnedAppSubtab("ownership")}
+                      >
+                        Ownership
+                      </Button>
                     </div>
 
                     {ownedAppSubtab === "overview" ? (
@@ -912,6 +1143,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                                 type="button"
                                 variant="outline"
                                 onClick={() => setOwnedUserRole(member.email, "developer")}
+                                disabled={userType !== "admin"}
                               >
                                 Set Developer
                               </Button>
@@ -925,6 +1157,19 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                           <p className="text-sm text-muted-foreground">No members.</p>
                         ) : null}
                       </div>
+                    ) : null}
+
+                    {ownedAppSubtab === "ownership" ? (
+                      <form onSubmit={transferOwnedAppOwnership} className="space-y-2 border rounded p-3">
+                        <div className="font-medium">Transfer Ownership</div>
+                        <Input
+                          value={newOwnerEmail}
+                          onChange={(e) => setNewOwnerEmail(e.target.value)}
+                          placeholder="New owner email"
+                          required
+                        />
+                        <Button type="submit">Transfer</Button>
+                      </form>
                     ) : null}
                   </div>
                 ) : null}
