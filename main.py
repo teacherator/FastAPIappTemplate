@@ -223,6 +223,7 @@ app.add_middleware(
     allow_origins=[
         "https://sizebud.com",
         "https://www.sizebud.com",
+        "https://cgulkowitz.github.io/FreshScan/",
     ],
     allow_credentials=True,
     allow_methods=["*"],
