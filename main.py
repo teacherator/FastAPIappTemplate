@@ -591,7 +591,6 @@ async def create_app(
 
     return {"message": "App created successfully"}
 
-
 @app.post("/request_app_creation")
 async def request_app_creation(
     app_name: Annotated[str, Form()],
