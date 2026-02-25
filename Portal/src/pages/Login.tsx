@@ -15,6 +15,7 @@ import {
 } 
 from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
 import { Loader2, CheckCircle2} from "lucide-react";
 import { Link } from "wouter";
 
@@ -47,7 +48,7 @@ export default function Login() {
       formData.append("email", data.email);
       formData.append("password", data.password);
 
-      const response = await fetch("https://api.sizebud.com/login", {
+      const response = await apiFetch("/login", {
         method: "POST",
         body: formData,
         credentials: "include",

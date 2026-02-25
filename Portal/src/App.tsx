@@ -3,6 +3,7 @@ import { Redirect, Route, Router, Switch } from "wouter";
 import Login from "./pages/Login";
 import Home from "./pages/Home";
 import Register from "./pages/Register";
+import { apiFetch } from "@/lib/api";
 
 type SessionUser = {
   email: string;
@@ -16,7 +17,7 @@ export default function App() {
   useEffect(() => {
     const loadSession = async () => {
       try {
-        const response = await fetch("/me", { credentials: "include" });
+        const response = await apiFetch("/me", { credentials: "include" });
         if (!response.ok) {
           localStorage.removeItem("email");
           setSessionUser(null);
@@ -40,7 +41,7 @@ export default function App() {
   const handleLogout = () => {
     void (async () => {
       try {
-        await fetch("/logout", {
+        await apiFetch("/logout", {
           method: "POST",
           credentials: "include",
         });

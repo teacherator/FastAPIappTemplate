@@ -14,6 +14,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -50,7 +51,7 @@ export default function Register() {
         formData.append("app_name", data.appName.trim());
       }
 
-      const response = await fetch("/register", {
+      const response = await apiFetch("/register", {
         method: "POST",
         body: formData,
         credentials: "include",

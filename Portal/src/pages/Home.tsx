@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/api";
 
 type AppRequest = {
   id: string;
@@ -95,7 +96,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     setIsLoadingRequests(true);
     try {
       const query = statusFilter ? `?status_filter=${statusFilter}` : "";
-      const response = await fetch(`/app_creation_requests${query}`, {
+      const response = await apiFetch(`/app_creation_requests${query}`, {
         credentials: "include",
       });
       if (!response.ok) {
@@ -118,7 +119,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const loadApps = async () => {
     setIsLoadingApps(true);
     try {
-      const response = await fetch("/admin/apps", { credentials: "include" });
+      const response = await apiFetch("/admin/apps", { credentials: "include" });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || "Failed to load apps");
@@ -139,7 +140,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const loadOwnedApps = async () => {
     setIsLoadingOwnedApps(true);
     try {
-      const response = await fetch("/my_owned_apps", { credentials: "include" });
+      const response = await apiFetch("/my_owned_apps", { credentials: "include" });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || "Failed to load owned apps");
@@ -172,7 +173,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const loadOwnedAppDetails = async (targetAppName: string) => {
     setIsLoadingOwnedAppDetails(true);
     try {
-      const response = await fetch(`/my_owned_apps/${encodeURIComponent(targetAppName)}/details`, {
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(targetAppName)}/details`, {
         credentials: "include",
       });
       if (!response.ok) {
@@ -197,7 +198,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     setIsLoadingAdminUsers(true);
     try {
       const q = appFilter?.trim() ? `?app_name=${encodeURIComponent(appFilter.trim())}` : "";
-      const response = await fetch(`/admin/users${q}`, { credentials: "include" });
+      const response = await apiFetch(`/admin/users${q}`, { credentials: "include" });
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || "Failed to load users");
@@ -220,7 +221,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     try {
       const formData = new FormData();
       formData.append("app_name", newAdminAppName);
-      const response = await fetch("/admin/create_app", {
+      const response = await apiFetch("/admin/create_app", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -249,7 +250,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       if (adminUsersFilterApp.trim()) {
         formData.append("app_name", adminUsersFilterApp.trim());
       }
-      const response = await fetch("/admin/users/role", {
+      const response = await apiFetch("/admin/users/role", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -275,7 +276,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     try {
       const formData = new FormData();
       formData.append("collection_name", newCollectionName);
-      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/collections`, {
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/collections`, {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -299,7 +300,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const deleteOwnedCollection = async (collectionName: string) => {
     if (!selectedOwnedApp) return;
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/collections/${encodeURIComponent(collectionName)}`,
         { method: "DELETE", credentials: "include" }
       );
@@ -326,7 +327,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       formData.append("collection_name", objectCollection);
       formData.append("userId", objectUserId);
       formData.append("obj", objectJson);
-      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects/upsert`, {
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects/upsert`, {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -350,7 +351,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     if (!selectedOwnedApp) return;
     try {
       const query = `?collection_name=${encodeURIComponent(deleteObjectCollection)}&user_id=${encodeURIComponent(deleteObjectUserId)}`;
-      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects${query}`, {
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/objects${query}`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -374,7 +375,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       const formData = new FormData();
       formData.append("target_email", targetEmail);
       formData.append("new_type", newRole);
-      const response = await fetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/users/role`, {
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/users/role`, {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -397,7 +398,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const removeOwnedUser = async (targetEmail: string) => {
     if (!selectedOwnedApp) return;
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/users/${encodeURIComponent(targetEmail)}`,
         {
           method: "DELETE",
@@ -425,7 +426,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     try {
       const formData = new FormData();
       formData.append("new_owner_email", newOwnerEmail);
-      const response = await fetch(
+      const response = await apiFetch(
         `/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/transfer_ownership`,
         {
           method: "POST",
@@ -465,7 +466,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
         formData.append("reason", reason.trim());
       }
 
-      const response = await fetch("/request_app_creation", {
+      const response = await apiFetch("/request_app_creation", {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -499,7 +500,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     try {
       const formData = new FormData();
       formData.append("status", status);
-      const response = await fetch(`/app_creation_requests/${requestId}/status`, {
+      const response = await apiFetch(`/app_creation_requests/${requestId}/status`, {
         method: "POST",
         body: formData,
         credentials: "include",
@@ -527,7 +528,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const deleteApp = async (appNameToDelete: string) => {
     setDeletingAppNames((prev) => ({ ...prev, [appNameToDelete]: true }));
     try {
-      const response = await fetch(`/admin/apps/${encodeURIComponent(appNameToDelete)}`, {
+      const response = await apiFetch(`/admin/apps/${encodeURIComponent(appNameToDelete)}`, {
         method: "DELETE",
         credentials: "include",
       });
