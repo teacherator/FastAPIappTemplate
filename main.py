@@ -225,6 +225,7 @@ app.add_middleware(
         "https://www.sizebud.com",
         "https://cgulkowitz.github.io",
         "https://stanleydylan-hash.github.io/"
+        "http://207.38.173.98",
     ],
     allow_credentials=True,
     allow_methods=["*"],
