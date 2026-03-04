@@ -224,14 +224,13 @@ app.add_middleware(
         "https://sizebud.com",
         "https://www.sizebud.com",
         "https://cgulkowitz.github.io",
-        "https://stanleydylan-hash.github.io/"
+        "https://stanleydylan-hash.github.io/",
         "http://207.38.173.98",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    httponly=True,
-    samesite="none",
+    
 )
 
 # In Docker, WORKDIR is /app
