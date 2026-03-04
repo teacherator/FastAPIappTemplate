@@ -230,6 +230,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    httponly=True,
+    samesite="none",
 )
 
 # In Docker, WORKDIR is /app
