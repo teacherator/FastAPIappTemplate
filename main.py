@@ -1329,6 +1329,25 @@ async def delete_app(
 
     return {"message": "App and associated data deleted successfully"}
 
+@app.post("/list_objects")
+async def list_objects(
+    app_name: Annotated[str, Form()],
+    collection_name: Annotated[str, Form()],
+    session: SessionData = Depends(require_session),
+):
+    apps = db.get_collection("apps")
+
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    target_db = client[app_name]
+    if collection_name not in target_db.list_collection_names():
+        raise HTTPException(404, "Collection does not exist")
+
+    collection = target_db[collection_name]
+    objects = list(collection.find({}, {"_id": 0}))
+
+    return {"objects": objects}
 
 @app.post("/delete_user")
 async def delete_user(
