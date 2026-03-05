@@ -1278,13 +1278,6 @@ async def update_object(
 ):
     apps = db.get_collection("apps")
 
-    logged_in_user = get_logged_in_user(session)
-    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
-        raise HTTPException(403, "You must be logged in as an developer")
-
-    if not user_has_app_access(logged_in_user, app_name):
-        raise HTTPException(403, "You must be a developer of this app")
-
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
 
