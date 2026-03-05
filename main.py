@@ -223,7 +223,7 @@ app.add_middleware(
     allow_origins=[
         "https://sizebud.com",
         "https://www.sizebud.com",
-        "https://cgulkowitz.github.io",
+        "https://cgulkowitz.github.io/FreshScan/",
         "https://stanleydylan-hash.github.io/",
         "http://207.38.173.98",
     ],
