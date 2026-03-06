@@ -266,13 +266,11 @@ class User(BaseModel):
 class UserInDB(User):
     hashed_password: str
 
-
 class SessionData(BaseModel):
     email: str
     app_name: str = PORTAL_APP
     session_id: UUID
     expires_at: datetime
-
 
 # Cookie frontend
 cookie_do = SessionCookie(
