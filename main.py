@@ -1566,3 +1566,4 @@ async def change_user_type(
 
     return {"message": "User type updated successfully"}
 
+print("FastAPI app is ready to accept requests.")
