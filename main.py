@@ -224,7 +224,7 @@ app.add_middleware(
         "https://sizebud.com",
         "https://www.sizebud.com",
         "https://stanleydylan-hash.github.io/",
-        "https://cgulkowitz.github.io/",
+        "https://cgulkowitz.github.io/", #removed path
         "http://207.38.173.98",
     ],
     allow_credentials=True,
