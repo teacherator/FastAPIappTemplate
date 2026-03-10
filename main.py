@@ -521,6 +521,9 @@ async def verify_email(
 @app.get("/me")
 async def me(session: SessionData = Depends(require_session)):
     logged_in_user = get_logged_in_user(session)
+
+    if not logged_in_user:
+        raise HTTPException(status_code=401, detail="problem retieving user data")
     return {
         "email": session.email,
         "app_name": session.app_name,
