@@ -410,7 +410,15 @@ async def login(
 
     user_app = user.get("app_name") or user.get("apps", [scoped_app])[0] or scoped_app
     session_id = create_session(email, normalize_app_name(user_app))
-    cookie_do.attach_to_response(response, session_id)
+    response.set_cookie(
+    key="fastapi_session",
+    value=str(session_id),
+    max_age=3600,
+    path="/",
+    secure=True,
+    httponly=True,
+    samesite="none",
+)
 
     return {"message": "Login successful"}
 
@@ -537,7 +545,13 @@ async def logout(
     session_id: UUID = Depends(get_session_id),
 ):
     delete_session(session_id)
-    cookie_do.delete_from_response(response)
+    response.delete_cookie(
+    key="fastapi_session",
+    path="/",
+    secure=True,
+    httponly=True,
+    samesite="none",
+)
     return {"message": "Logged out"}
 
 
