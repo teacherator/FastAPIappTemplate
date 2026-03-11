@@ -559,6 +559,7 @@ async def me(session: SessionData = Depends(require_session)):
     if not logged_in_user:
         raise HTTPException(status_code=401, detail="problem retieving user data")
     return {
+        "id": str(logged_in_user["_id"]),
         "email": session.email,
         "app_name": session.app_name,
         "type": (logged_in_user or {}).get("type", "user"),
