@@ -20,7 +20,6 @@ from email.mime.multipart import MIMEMultipart
 import random
 from datetime import datetime, timedelta, timezone
 import re
-from urllib.parse import urlparse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
@@ -97,24 +96,6 @@ def normalize_existing_app_or_404(app_name: str) -> str:
     if not app_name_exists(normalized_app):
         raise HTTPException(status_code=404, detail="App not found")
     return normalized_app
-
-
-def normalize_domain(domain: str) -> str:
-    cleaned = domain.strip().lower()
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="Domain is required")
-
-    parsed = urlparse(cleaned if "://" in cleaned else f"https://{cleaned}")
-    hostname = (parsed.hostname or "").strip().lower()
-    if not hostname:
-        raise HTTPException(status_code=400, detail="Invalid domain")
-
-    if hostname == "localhost":
-        return hostname
-
-    if not re.match(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$", hostname):
-        raise HTTPException(status_code=400, detail="Invalid domain")
-    return hostname
 
 
 def require_app_owner_or_admin(app_name: str, session: "SessionData") -> tuple[str, dict]:
@@ -201,7 +182,6 @@ def delete_app_data_and_membership(app_name: str) -> None:
     normalized_app = app_name.strip().lower()
     apps = db.get_collection("apps")
     apps.delete_one({"app_name": normalized_app})
-    domain_col.delete_one({"app_name": normalized_app})
     remove_app_membership_and_demote(normalized_app)
     client.drop_database(normalized_app)
 
@@ -222,14 +202,11 @@ session_collection = db.get_collection("sessions")
 
 verification_col = db.get_collection("email_verification")
 app_request_col = db.get_collection("app_creation_requests")
-domain_col = db.get_collection("app_domains")
 
 verification_col.create_index("created_at", expireAfterSeconds=600)
 
 session_collection.create_index("expires_at", expireAfterSeconds=0)
 app_request_col.create_index("created_at")
-domain_col.create_index("app_name", unique=True)
-domain_col.create_index("domain", unique=True)
 
 try:
     client.admin.command("ping")
@@ -559,7 +536,6 @@ async def me(session: SessionData = Depends(require_session)):
     if not logged_in_user:
         raise HTTPException(status_code=401, detail="problem retieving user data")
     return {
-        "id": str(logged_in_user["_id"]),
         "email": session.email,
         "app_name": session.app_name,
         "type": (logged_in_user or {}).get("type", "user"),
@@ -1013,45 +989,10 @@ async def my_owned_app_details(
             else None,
             "collections_count": len(collections),
             "members_count": len(member_rows),
-            "current_domain": (
-                domain_col.find_one({"app_name": normalized_app}, {"_id": 0, "domain": 1}) or {}
-            ).get("domain"),
         },
         "collections": sorted(collections),
         "members": member_rows,
     }
-
-
-@app.post("/my_owned_apps/{app_name}/domain")
-async def owned_app_set_domain(
-    app_name: str,
-    domain: Annotated[str, Form()],
-    session: SessionData = Depends(require_session),
-):
-    normalized_app, _ = require_app_owner_or_admin(app_name, session)
-    normalized_domain = normalize_domain(domain)
-    existing = domain_col.find_one({"domain": normalized_domain}, {"_id": 0, "app_name": 1})
-    if existing and existing.get("app_name") != normalized_app:
-        raise HTTPException(status_code=409, detail="Domain is already assigned to another app")
-
-    now = utcnow()
-    domain_col.update_one(
-        {"app_name": normalized_app},
-        {
-            "$set": {
-                "domain": normalized_domain,
-                "updated_at": now,
-                "updated_by": session.email,
-            },
-            "$setOnInsert": {
-                "app_name": normalized_app,
-                "created_at": now,
-                "created_by": session.email,
-            },
-        },
-        upsert=True,
-    )
-    return {"message": "Domain saved", "app_name": normalized_app, "domain": normalized_domain}
 
 
 @app.post("/my_owned_apps/{app_name}/collections")
@@ -1387,11 +1328,11 @@ async def fetch_object(
     apps = db.get_collection("apps")
 
     logged_in_user = get_logged_in_user(session)
-    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
-        raise HTTPException(403, "You must be logged in as a developer")
+    if not logged_in_user:# or logged_in_user.get("type") not in ["developer", "admin"]:
+        raise HTTPException(403, "You must be logged in")
 
     if not user_has_app_access(logged_in_user, app_name):
-        raise HTTPException(403, "You must be a developer of this app")
+        raise HTTPException(403, "You must be a developer or user of this app")
 
     if not apps.find_one({"app_name": app_name}):
         raise HTTPException(404, "App not found")
