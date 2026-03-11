@@ -343,10 +343,14 @@ def read_session(session_id: UUID) -> SessionData | None:
 def delete_session(session_id: UUID) -> None:
     session_collection.delete_one({"_id": str(session_id)})
 
-async def get_session_id(session_id: UUID | None = Depends(cookie_do)) -> UUID:
-    if not session_id:
+async def get_session_id(request: Request) -> UUID:
+    raw = request.cookies.get("fastapi_session")
+    if not raw:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return session_id
+    try:
+        return UUID(raw)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid session cookie")
 
 async def require_session(session_id: UUID = Depends(get_session_id)) -> SessionData:
     session = read_session(session_id)
@@ -398,7 +402,6 @@ async def login(
             )
         )
     else:
-        # Backward-compatible mode for clients that do not send app_name.
         candidates = list(user_col.find({"email": email}))
 
     user = next(
@@ -410,18 +413,18 @@ async def login(
 
     user_app = user.get("app_name") or user.get("apps", [scoped_app])[0] or scoped_app
     session_id = create_session(email, normalize_app_name(user_app))
+
     response.set_cookie(
-    key="fastapi_session",
-    value=str(session_id),
-    max_age=3600,
-    path="/",
-    secure=True,
-    httponly=True,
-    samesite="none",
-)
+        key="fastapi_session",
+        value=str(session_id),
+        max_age=3600,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    )
 
     return {"message": "Login successful"}
-
 
 @app.post("/register")
 async def register_user(
@@ -546,12 +549,12 @@ async def logout(
 ):
     delete_session(session_id)
     response.delete_cookie(
-    key="fastapi_session",
-    path="/",
-    secure=True,
-    httponly=True,
-    samesite="none",
-)
+        key="fastapi_session",
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    )
     return {"message": "Logged out"}
 
 
