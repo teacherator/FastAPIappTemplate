@@ -1315,6 +1315,39 @@ async def update_object(
     return {"message": "Object merged into userId successfully"}
 
 
+@app.post("/fetch_object")
+async def fetch_object(
+    app_name: Annotated[str, Form()],
+    collection_name: Annotated[str, Form()],
+    userId: Annotated[str, Form()],
+    session: SessionData = Depends(require_session),
+):
+    apps = db.get_collection("apps")
+
+    logged_in_user = get_logged_in_user(session)
+    if not logged_in_user or logged_in_user.get("type") not in ["developer", "admin"]:
+        raise HTTPException(403, "You must be logged in as a developer")
+
+    if not user_has_app_access(logged_in_user, app_name):
+        raise HTTPException(403, "You must be a developer of this app")
+
+    if not apps.find_one({"app_name": app_name}):
+        raise HTTPException(404, "App not found")
+
+    target_db = client[app_name]
+    if collection_name not in target_db.list_collection_names():
+        raise HTTPException(404, "Collection does not exist")
+
+    collection = target_db[collection_name]
+
+    doc = collection.find_one({"userId": userId})
+    if not doc:
+        raise HTTPException(404, "UserId not found in collection")
+
+    doc.pop("_id", None)
+    return doc
+
+
 @app.post("/delete_app")
 async def delete_app(
     admin_password: Annotated[str, Form()],
