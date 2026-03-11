@@ -36,6 +36,7 @@ type OwnedAppDetails = {
     created_at: string | null;
     collections_count: number;
     members_count: number;
+    current_domain: string | null;
   };
   collections: string[];
   members: Array<{
@@ -85,6 +86,8 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
   const [isLoadingAdminUsers, setIsLoadingAdminUsers] = useState(false);
   const [newAdminAppName, setNewAdminAppName] = useState("");
   const [newOwnerEmail, setNewOwnerEmail] = useState("");
+  const [currentDomainInput, setCurrentDomainInput] = useState("");
+  const [isSavingDomain, setIsSavingDomain] = useState(false);
   const [deletingAppNames, setDeletingAppNames] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<
     "request" | "mine" | "owned" | "open" | "history" | "apps" | "create" | "users"
@@ -151,6 +154,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       if (!appsData.length) {
         setSelectedOwnedApp(null);
         setOwnedAppDetails(null);
+        setCurrentDomainInput("");
         return;
       }
       const keepSelected = selectedOwnedApp && appsData.some((a) => a.app_name === selectedOwnedApp);
@@ -182,6 +186,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       }
       const data = (await response.json()) as OwnedAppDetails;
       setOwnedAppDetails(data);
+      setCurrentDomainInput(data.app.current_domain ?? "");
     } catch (error) {
       toast({
         title: "Could not load app details",
@@ -189,6 +194,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
         variant: "destructive",
       });
       setOwnedAppDetails(null);
+      setCurrentDomainInput("");
     } finally {
       setIsLoadingOwnedAppDetails(false);
     }
@@ -455,6 +461,37 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     }
   };
 
+  const saveOwnedAppDomain = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedOwnedApp) return;
+    setIsSavingDomain(true);
+    try {
+      const formData = new FormData();
+      formData.append("domain", currentDomainInput);
+      const response = await apiFetch(`/my_owned_apps/${encodeURIComponent(selectedOwnedApp)}/domain`, {
+        method: "POST",
+        body: formData,
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Failed to save domain");
+      }
+      const data = (await response.json()) as { domain: string };
+      setCurrentDomainInput(data.domain);
+      toast({ title: "Domain saved", description: `Current domain set to ${data.domain}.` });
+      loadOwnedAppDetails(selectedOwnedApp);
+    } catch (error) {
+      toast({
+        title: "Domain save failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingDomain(false);
+    }
+  };
+
   const submitRequest = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -715,6 +752,21 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                         <div>
                           <span className="font-medium">Members:</span> {ownedAppDetails.app.members_count}
                         </div>
+                        <div>
+                          <span className="font-medium">Current domain:</span>{" "}
+                          {ownedAppDetails.app.current_domain ?? "not set"}
+                        </div>
+                        <form onSubmit={saveOwnedAppDomain} className="pt-2 flex gap-2">
+                          <Input
+                            value={currentDomainInput}
+                            onChange={(e) => setCurrentDomainInput(e.target.value)}
+                            placeholder="app.example.com"
+                            required
+                          />
+                          <Button type="submit" disabled={isSavingDomain}>
+                            {isSavingDomain ? "Saving..." : "Save Domain"}
+                          </Button>
+                        </form>
                       </div>
                     ) : null}
 
@@ -1055,6 +1107,21 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                         <div>
                           <span className="font-medium">Members:</span> {ownedAppDetails.app.members_count}
                         </div>
+                        <div>
+                          <span className="font-medium">Current domain:</span>{" "}
+                          {ownedAppDetails.app.current_domain ?? "not set"}
+                        </div>
+                        <form onSubmit={saveOwnedAppDomain} className="pt-2 flex gap-2">
+                          <Input
+                            value={currentDomainInput}
+                            onChange={(e) => setCurrentDomainInput(e.target.value)}
+                            placeholder="app.example.com"
+                            required
+                          />
+                          <Button type="submit" disabled={isSavingDomain}>
+                            {isSavingDomain ? "Saving..." : "Save Domain"}
+                          </Button>
+                        </form>
                       </div>
                     ) : null}
 
