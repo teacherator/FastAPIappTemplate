@@ -226,6 +226,8 @@ app.add_middleware(
         "https://stanleydylan-hash.github.io",
         "https://cgulkowitz.github.io", #removed path
         "http://207.38.173.98",
+        "https://lionfish-app-5f4rk.ondigitalocean.app",
+        "https://kohack2026.ramaztec.org"
     ],
     allow_credentials=True,
     allow_methods=["*"],
