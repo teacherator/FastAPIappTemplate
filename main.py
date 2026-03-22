@@ -249,6 +249,7 @@ app.add_middleware(
         "https://stanleydylan-hash.github.io",
         "https://cgulkowitz.github.io", #removed path
         "http://207.38.173.98",
+        "75.146.246.73",
     ],
     allow_credentials=True,
     allow_methods=["*"],
