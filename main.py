@@ -227,7 +227,7 @@ app.add_middleware(
         "https://cgulkowitz.github.io", #removed path
         "http://207.38.173.98",
         "https://lionfish-app-5f4rk.ondigitalocean.app",
-        "https://kohack2026.ramaztec.org"
+        "https://kohack2026.ramaztec.org",
         "75.146.246.73",
     ],
     allow_credentials=True,
