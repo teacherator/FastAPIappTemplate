@@ -218,21 +218,34 @@ except Exception as e:
 app = FastAPI()
 password_hash = PasswordHash.recommended()
 
+
+def get_allowed_origins():
+    collection = db.get_collection("app_domains")
+    doc = collection.find_one()
+
+    if not doc or "URLs" not in doc:
+        return []
+
+    urls = doc["URLs"]
+
+    # Normalize (VERY important)
+    normalized = []
+    for url in urls:
+        if not url.startswith("http"):
+            url = f"http://{url}"
+        normalized.append(url)
+
+    return normalized
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://sizebud.com",
-        "https://www.sizebud.com",
-        "https://stanleydylan-hash.github.io",
-        "https://cgulkowitz.github.io", #removed path
-        "http://207.38.173.98",
-        "75.146.246.73",
-    ],
+    allow_origins=get_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    
 )
+
 
 # In Docker, WORKDIR is /app
 CANDIDATES = [
