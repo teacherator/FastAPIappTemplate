@@ -1611,7 +1611,13 @@ async def admin_dashboard(
         "dashboard.html",
         {"request": request, "developer_email": session.email, "app_stats": app_stats},
     )
-
+@app.get("/debug/db")
+async def debug_db():
+    return {
+        "db_name": db.name,
+        "collections": db.list_collection_names(),
+        "app_domains": list(db.get_collection("app_domains").find({}, {"_id": 0}))
+    }
 
 @app.post("/change_user_type")
 async def change_user_type(
