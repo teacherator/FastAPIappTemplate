@@ -221,22 +221,33 @@ password_hash = PasswordHash.recommended()
 
 def get_allowed_origins():
     collection = db.get_collection("app_domains")
-    doc = collection.find_one()
+    docs = list(collection.find({}, {"_id": 0, "url": 1, "URLs": 1}))
 
-    if not doc or "URLs" not in doc:
-        return []
+    origins = []
 
-    urls = doc["URLs"]
+    for doc in docs:
+        values = []
 
-    # Normalize (VERY important)
-    normalized = []
-    for url in urls:
-        if not url.startswith("http"):
-            url = f"http://{url}"
-        normalized.append(url)
+        if "url" in doc and doc["url"]:
+            values.append(doc["url"])
 
-    return normalized
+        if "URLs" in doc and isinstance(doc["URLs"], list):
+            values.extend(doc["URLs"])
 
+        for url in values:
+            if not isinstance(url, str):
+                continue
+
+            url = url.strip().rstrip("/")
+            if not url:
+                continue
+
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
+
+            origins.append(url)
+
+    return list(dict.fromkeys(origins))
 
 app.add_middleware(
     CORSMiddleware,
