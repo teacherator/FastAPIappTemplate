@@ -231,7 +231,7 @@ def get_allowed_origins():
         if "url" in doc and doc["url"]:
             values.append(doc["url"])
 
-        if "URLs" in doc and isinstance(doc["URLs"], list):
+        if "URLS" in doc and isinstance(doc["URLs"], list):
             values.extend(doc["URLs"])
 
         for url in values:
