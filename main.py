@@ -249,6 +249,9 @@ def get_allowed_origins():
 
     return list(dict.fromkeys(origins))
 
+origins = get_allowed_origins()
+print("CORS origins loaded:", origins)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_allowed_origins(),
