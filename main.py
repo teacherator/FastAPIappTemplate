@@ -221,7 +221,7 @@ password_hash = PasswordHash.recommended()
 
 def get_allowed_origins():
     collection = db.get_collection("app_domains")
-    docs = list(collection.find({}, {"_id": 0, "url": 1, "URLs": 1}))
+    docs = list(collection.find({}, {"_id": 0, "url": 1, "URLS": 1}))
 
     origins = []
 
