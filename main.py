@@ -121,6 +121,20 @@ def normalize_domain_or_400(domain: str | None) -> str:
     return hostname
 
 
+def normalize_domain_value(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    cleaned = value.strip().lower().rstrip("/")
+    if not cleaned:
+        return None
+
+    candidate = cleaned if "://" in cleaned else f"https://{cleaned}"
+    parsed = urlparse(candidate)
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    return hostname or None
+
+
 def normalize_existing_app_or_404(app_name: str) -> str:
     normalized_app = app_name.strip().lower()
     if not re.match(r"^[a-z0-9][a-z0-9_-]{2,49}$", normalized_app):
@@ -270,6 +284,54 @@ def can_reassign_domain_doc(domain_doc: dict, request_id: ObjectId) -> bool:
     return not database_exists(existing_app)
 
 
+def iter_domain_values(domain_doc: dict) -> list[str]:
+    values: list[str] = []
+    raw_url = domain_doc.get("url")
+    if isinstance(raw_url, str) and raw_url.strip():
+        values.append(raw_url)
+
+    raw_urls = domain_doc.get("URLS")
+    if isinstance(raw_urls, list):
+        values.extend([item for item in raw_urls if isinstance(item, str) and item.strip()])
+
+    return values
+
+
+def find_domain_docs_for_hostname(app_domains, requested_domain: str) -> list[dict]:
+    matches: list[dict] = []
+    for domain_doc in app_domains.find({}, {"app_name": 1, "url": 1, "URLS": 1, "created_at": 1, "updated_at": 1}):
+        normalized_values = {normalize_domain_value(value) for value in iter_domain_values(domain_doc)}
+        normalized_values.discard(None)
+        if requested_domain in normalized_values:
+            matches.append(domain_doc)
+    return matches
+
+
+def update_domain_doc_for_app(app_domains, domain_doc: dict, requested_app: str, requested_domain: str, now: datetime) -> None:
+    update_doc = {
+        "$set": {
+            "app_name": requested_app,
+            "url": requested_domain,
+            "updated_at": now,
+        }
+    }
+    if not domain_doc.get("created_at"):
+        update_doc["$set"]["created_at"] = now
+    app_domains.update_one({"_id": domain_doc["_id"]}, update_doc)
+
+
+def select_reusable_domain_doc(matching_docs: list[dict], requested_app: str, request_id: ObjectId) -> dict | None:
+    for domain_doc in matching_docs:
+        if str(domain_doc.get("app_name", "")).strip().lower() == requested_app:
+            return domain_doc
+
+    for domain_doc in matching_docs:
+        if can_reassign_domain_doc(domain_doc, request_id):
+            return domain_doc
+
+    return None
+
+
 def assign_domain_to_app(
     app_domains,
     requested_app: str,
@@ -277,46 +339,43 @@ def assign_domain_to_app(
     now: datetime,
     request_id: ObjectId,
 ) -> None:
-    existing_by_url = app_domains.find_one({"url": requested_domain})
-    if existing_by_url:
-        existing_app = str(existing_by_url.get("app_name", "")).strip().lower()
-        if existing_app not in {"", requested_app} and not can_reassign_domain_doc(existing_by_url, request_id):
-            raise HTTPException(status_code=409, detail="Domain already exists")
-
-        update_doc = {
-            "$set": {
-                "app_name": requested_app,
-                "url": requested_domain,
-                "updated_at": now,
-            }
-        }
-        if not existing_by_url.get("created_at"):
-            update_doc["$set"]["created_at"] = now
-        app_domains.update_one({"_id": existing_by_url["_id"]}, update_doc)
+    matching_docs = find_domain_docs_for_hostname(app_domains, requested_domain)
+    reusable_domain_doc = select_reusable_domain_doc(matching_docs, requested_app, request_id)
+    if reusable_domain_doc:
+        update_domain_doc_for_app(app_domains, reusable_domain_doc, requested_app, requested_domain, now)
         return
+    if matching_docs:
+        raise HTTPException(status_code=409, detail="Domain already exists")
 
     existing_by_app = app_domains.find_one({"app_name": requested_app})
     if existing_by_app:
-        update_doc = {
-            "$set": {
+        try:
+            update_domain_doc_for_app(app_domains, existing_by_app, requested_app, requested_domain, now)
+            return
+        except DuplicateKeyError:
+            matching_docs = find_domain_docs_for_hostname(app_domains, requested_domain)
+            reusable_domain_doc = select_reusable_domain_doc(matching_docs, requested_app, request_id)
+            if reusable_domain_doc:
+                update_domain_doc_for_app(app_domains, reusable_domain_doc, requested_app, requested_domain, now)
+                return
+            raise HTTPException(status_code=409, detail="Domain already exists")
+
+    try:
+        app_domains.insert_one(
+            {
                 "app_name": requested_app,
                 "url": requested_domain,
+                "created_at": now,
                 "updated_at": now,
             }
-        }
-        if not existing_by_app.get("created_at"):
-            update_doc["$set"]["created_at"] = now
-        app_domains.update_one({"_id": existing_by_app["_id"]}, update_doc)
-        return
-
-    app_domains.insert_one(
-        {
-            "app_name": requested_app,
-            "url": requested_domain,
-            "created_at": now,
-            "updated_at": now,
-        }
-    )
+        )
+    except DuplicateKeyError:
+        matching_docs = find_domain_docs_for_hostname(app_domains, requested_domain)
+        reusable_domain_doc = select_reusable_domain_doc(matching_docs, requested_app, request_id)
+        if reusable_domain_doc:
+            update_domain_doc_for_app(app_domains, reusable_domain_doc, requested_app, requested_domain, now)
+            return
+        raise HTTPException(status_code=409, detail="Domain already exists")
 
 
 # Load env variables
