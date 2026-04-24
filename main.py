@@ -20,6 +20,7 @@ from email.mime.multipart import MIMEMultipart
 import random
 from datetime import datetime, timedelta, timezone
 import re
+from urllib.parse import urlparse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
@@ -85,6 +86,39 @@ def app_name_exists(app_name: str) -> bool:
 
     db_names = {name.lower() for name in client.list_database_names()}
     return normalized in db_names and normalized not in RESERVED_DB_NAMES
+
+
+def normalize_domain_or_400(domain: str | None) -> str:
+    cleaned = (domain or "").strip().lower()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    if any(char in cleaned for char in ["/", "?", "#"]) and "://" not in cleaned:
+        raise HTTPException(status_code=400, detail="Domain must be a hostname like app.example.com")
+
+    candidate = cleaned if "://" in cleaned else f"https://{cleaned}"
+    parsed = urlparse(candidate)
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+
+    if (
+        not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise HTTPException(status_code=400, detail="Domain must be a hostname like app.example.com")
+
+    if not re.fullmatch(
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}",
+        hostname,
+    ):
+        raise HTTPException(status_code=400, detail="Invalid domain")
+
+    return hostname
 
 
 def normalize_existing_app_or_404(app_name: str) -> str:
@@ -642,10 +676,12 @@ async def create_app(
 @app.post("/request_app_creation")
 async def request_app_creation(
     app_name: Annotated[str, Form()],
+    domain: Annotated[str, Form()],
     reason: Annotated[str | None, Form()] = None,
     session: SessionData = Depends(require_session),
 ):
     requested_app = app_name.strip().lower()
+    requested_domain = normalize_domain_or_400(domain)
     if not re.match(r"^[a-z0-9][a-z0-9_-]{2,49}$", requested_app):
         raise HTTPException(
             status_code=400,
@@ -671,6 +707,7 @@ async def request_app_creation(
         app_request_col.insert_one(
             {
                 "requested_app_name": requested_app,
+                "requested_domain": requested_domain,
                 "requested_by": session.email,
                 "requested_from_app": session.app_name,
                 "reason": (reason or "").strip(),
@@ -693,6 +730,7 @@ def serialize_app_request(doc: dict) -> dict:
     return {
         "id": str(doc.get("_id")),
         "requested_app_name": doc.get("requested_app_name", ""),
+        "requested_domain": doc.get("requested_domain", ""),
         "requested_by": doc.get("requested_by", ""),
         "requested_from_app": doc.get("requested_from_app", PORTAL_APP),
         "reason": doc.get("reason", ""),
@@ -757,10 +795,12 @@ async def update_app_creation_request_status(
         raise HTTPException(status_code=409, detail="Request is already reviewed")
 
     requested_app = existing.get("requested_app_name", "").strip().lower()
+    requested_domain = normalize_domain_or_400(existing.get("requested_domain"))
     if not requested_app:
         raise HTTPException(status_code=400, detail="Request is missing app name")
 
     apps = db.get_collection("apps")
+    app_domains = db.get_collection("app_domains")
     now = utcnow()
 
     try:
@@ -779,7 +819,21 @@ async def update_app_creation_request_status(
                         "app_name": requested_app,
                         "created_at": now,
                         "created_by_request": str(oid),
-                    }
+                    },
+                    "$set": {"current_domain": requested_domain},
+                },
+                upsert=True,
+            )
+
+            app_domains.update_one(
+                {"app_name": requested_app},
+                {
+                    "$set": {
+                        "app_name": requested_app,
+                        "url": requested_domain,
+                        "updated_at": now,
+                    },
+                    "$setOnInsert": {"created_at": now},
                 },
                 upsert=True,
             )
@@ -1017,6 +1071,7 @@ async def my_owned_app_details(
             else None,
             "collections_count": len(collections),
             "members_count": len(member_rows),
+            "current_domain": app_doc.get("current_domain"),
         },
         "collections": sorted(collections),
         "members": member_rows,

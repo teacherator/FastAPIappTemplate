@@ -8,6 +8,7 @@ import { apiFetch } from "@/lib/api";
 type AppRequest = {
   id: string;
   requested_app_name: string;
+  requested_domain: string;
   requested_by: string;
   requested_from_app: string;
   reason: string;
@@ -61,6 +62,7 @@ type HomeProps = {
 
 export default function Home({ email, userType, onLogout }: HomeProps) {
   const [appName, setAppName] = useState("");
+  const [requestedDomain, setRequestedDomain] = useState("");
   const [reason, setReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [requests, setRequests] = useState<AppRequest[]>([]);
@@ -499,6 +501,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
     try {
       const formData = new FormData();
       formData.append("app_name", appName);
+      formData.append("domain", requestedDomain);
       if (reason.trim()) {
         formData.append("reason", reason.trim());
       }
@@ -515,6 +518,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
       }
 
       setAppName("");
+      setRequestedDomain("");
       setReason("");
       toast({
         title: "Request submitted",
@@ -944,6 +948,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                     <div className="text-sm text-muted-foreground">
                       Requested by {request.requested_by} from {request.requested_from_app}
                     </div>
+                    <div className="text-sm text-muted-foreground">Domain: {request.requested_domain}</div>
                     {request.reason ? <div className="text-sm">{request.reason}</div> : null}
                     <div className="text-xs text-muted-foreground">Status: {request.status}</div>
                     {activeTab === "open" ? (
@@ -1015,6 +1020,12 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                   value={appName}
                   onChange={(e) => setAppName(e.target.value)}
                   placeholder="App name (e.g. my_new_app)"
+                  required
+                />
+                <Input
+                  value={requestedDomain}
+                  onChange={(e) => setRequestedDomain(e.target.value)}
+                  placeholder="Domain (e.g. app.example.com)"
                   required
                 />
                 <textarea
@@ -1250,6 +1261,7 @@ export default function Home({ email, userType, onLogout }: HomeProps) {
                 {requests.map((request) => (
                   <div key={request.id} className="border rounded-md p-3 space-y-1">
                     <div className="font-semibold">{request.requested_app_name}</div>
+                    <div className="text-sm text-muted-foreground">Domain: {request.requested_domain}</div>
                     <div className="text-sm text-muted-foreground">Status: {request.status}</div>
                     {request.reason ? <div className="text-sm">{request.reason}</div> : null}
                   </div>
