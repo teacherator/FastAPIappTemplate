@@ -253,6 +253,72 @@ def approval_duplicate_error_detail(exc: DuplicateKeyError) -> str:
     return "Duplicate key while reviewing request"
 
 
+def database_exists(app_name: str) -> bool:
+    normalized_app = app_name.strip().lower()
+    return normalized_app in {name.strip().lower() for name in client.list_database_names()}
+
+
+def can_reassign_domain_doc(domain_doc: dict, request_id: ObjectId) -> bool:
+    existing_app = str(domain_doc.get("app_name", "")).strip().lower()
+    if not existing_app:
+        return True
+
+    linked_app_doc = db.get_collection("apps").find_one({"app_name": existing_app}, {"created_by_request": 1})
+    if linked_app_doc:
+        return str(linked_app_doc.get("created_by_request", "")).strip() == str(request_id)
+
+    return not database_exists(existing_app)
+
+
+def assign_domain_to_app(
+    app_domains,
+    requested_app: str,
+    requested_domain: str,
+    now: datetime,
+    request_id: ObjectId,
+) -> None:
+    existing_by_url = app_domains.find_one({"url": requested_domain})
+    if existing_by_url:
+        existing_app = str(existing_by_url.get("app_name", "")).strip().lower()
+        if existing_app not in {"", requested_app} and not can_reassign_domain_doc(existing_by_url, request_id):
+            raise HTTPException(status_code=409, detail="Domain already exists")
+
+        update_doc = {
+            "$set": {
+                "app_name": requested_app,
+                "url": requested_domain,
+                "updated_at": now,
+            }
+        }
+        if not existing_by_url.get("created_at"):
+            update_doc["$set"]["created_at"] = now
+        app_domains.update_one({"_id": existing_by_url["_id"]}, update_doc)
+        return
+
+    existing_by_app = app_domains.find_one({"app_name": requested_app})
+    if existing_by_app:
+        update_doc = {
+            "$set": {
+                "app_name": requested_app,
+                "url": requested_domain,
+                "updated_at": now,
+            }
+        }
+        if not existing_by_app.get("created_at"):
+            update_doc["$set"]["created_at"] = now
+        app_domains.update_one({"_id": existing_by_app["_id"]}, update_doc)
+        return
+
+    app_domains.insert_one(
+        {
+            "app_name": requested_app,
+            "url": requested_domain,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+
 # Load env variables
 load_dotenv()
 MONGO_URI = os.environ.get("MONGODB_URL")
@@ -841,7 +907,7 @@ async def update_app_creation_request_status(
     try:
         if status_value == "approved":
             existing_app_doc = apps.find_one({"app_name": requested_app})
-            app_db_exists = requested_app in {name.strip().lower() for name in client.list_database_names()}
+            app_db_exists = database_exists(requested_app)
 
             if existing_app_doc and str(existing_app_doc.get("created_by_request", "")).strip() != str(oid):
                 raise HTTPException(status_code=409, detail="App already exists")
@@ -872,18 +938,7 @@ async def update_app_creation_request_status(
             )
             created_app_resources = True
 
-            app_domains.update_one(
-                {"app_name": requested_app},
-                {
-                    "$set": {
-                        "app_name": requested_app,
-                        "url": requested_domain,
-                        "updated_at": now,
-                    },
-                    "$setOnInsert": {"created_at": now},
-                },
-                upsert=True,
-            )
+            assign_domain_to_app(app_domains, requested_app, requested_domain, now, oid)
 
             if requester:
                 updates: dict = {"$addToSet": {"apps": requested_app}}
