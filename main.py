@@ -216,8 +216,41 @@ def delete_app_data_and_membership(app_name: str) -> None:
     normalized_app = app_name.strip().lower()
     apps = db.get_collection("apps")
     apps.delete_one({"app_name": normalized_app})
+    db.get_collection("app_domains").delete_many({"app_name": normalized_app})
     remove_app_membership_and_demote(normalized_app)
     client.drop_database(normalized_app)
+
+
+def rollback_app_approval_side_effects(
+    app_name: str,
+    requester_snapshot: dict | None = None,
+) -> None:
+    normalized_app = app_name.strip().lower()
+    db.get_collection("apps").delete_one({"app_name": normalized_app})
+    db.get_collection("app_domains").delete_many({"app_name": normalized_app})
+
+    if normalized_app in {name.strip().lower() for name in client.list_database_names()}:
+        client.drop_database(normalized_app)
+
+    if requester_snapshot and requester_snapshot.get("_id") is not None:
+        user_col.update_one(
+            {"_id": requester_snapshot["_id"]},
+            {
+                "$set": {
+                    "apps": requester_snapshot.get("apps", []),
+                    "type": requester_snapshot.get("type", "user"),
+                }
+            },
+        )
+
+
+def approval_duplicate_error_detail(exc: DuplicateKeyError) -> str:
+    message = str(exc).lower()
+    if "url" in message or "domain" in message:
+        return "Domain already exists"
+    if "app_name" in message:
+        return "App already exists"
+    return "Duplicate key while reviewing request"
 
 
 # Load env variables
@@ -802,15 +835,28 @@ async def update_app_creation_request_status(
     apps = db.get_collection("apps")
     app_domains = db.get_collection("app_domains")
     now = utcnow()
+    requester_snapshot: dict | None = None
+    created_app_resources = False
 
     try:
         if status_value == "approved":
-            if app_name_exists(requested_app):
+            existing_app_doc = apps.find_one({"app_name": requested_app})
+            app_db_exists = requested_app in {name.strip().lower() for name in client.list_database_names()}
+
+            if existing_app_doc and str(existing_app_doc.get("created_by_request", "")).strip() != str(oid):
+                raise HTTPException(status_code=409, detail="App already exists")
+            if app_db_exists and not existing_app_doc:
+                raise HTTPException(status_code=409, detail="App already exists")
+            if not existing_app_doc and app_name_exists(requested_app):
                 raise HTTPException(status_code=409, detail="App already exists")
 
-            target_db = client[requested_app]
-            if "default_collection" not in target_db.list_collection_names():
-                target_db.create_collection("default_collection")
+            requester = user_col.find_one({"email": existing.get("requested_by")})
+            if requester:
+                requester_snapshot = {
+                    "_id": requester["_id"],
+                    "apps": list(requester.get("apps", [])) if isinstance(requester.get("apps"), list) else [],
+                    "type": requester.get("type", "user"),
+                }
 
             apps.update_one(
                 {"app_name": requested_app},
@@ -824,6 +870,7 @@ async def update_app_creation_request_status(
                 },
                 upsert=True,
             )
+            created_app_resources = True
 
             app_domains.update_one(
                 {"app_name": requested_app},
@@ -838,12 +885,15 @@ async def update_app_creation_request_status(
                 upsert=True,
             )
 
-            requester = user_col.find_one({"email": existing.get("requested_by")})
             if requester:
                 updates: dict = {"$addToSet": {"apps": requested_app}}
                 if requester.get("type") not in {"developer", "admin"}:
                     updates["$set"] = {"type": "developer"}
                 user_col.update_one({"_id": requester["_id"]}, updates)
+
+            target_db = client[requested_app]
+            if "default_collection" not in target_db.list_collection_names():
+                target_db.create_collection("default_collection")
 
         app_request_col.update_one(
             {"_id": oid},
@@ -855,9 +905,19 @@ async def update_app_creation_request_status(
                 }
             },
         )
-    except DuplicateKeyError:
-        raise HTTPException(status_code=409, detail="App already exists")
+    except DuplicateKeyError as exc:
+        if created_app_resources:
+            try:
+                rollback_app_approval_side_effects(requested_app, requester_snapshot)
+            except PyMongoError:
+                pass
+        raise HTTPException(status_code=409, detail=approval_duplicate_error_detail(exc))
     except PyMongoError:
+        if created_app_resources:
+            try:
+                rollback_app_approval_side_effects(requested_app, requester_snapshot)
+            except PyMongoError:
+                pass
         raise HTTPException(status_code=503, detail="Database error while reviewing request")
 
     updated = app_request_col.find_one({"_id": oid})
