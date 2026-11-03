@@ -3,11 +3,11 @@ Docs: https://fastapi-template-app-entxr.ondigitalocean.app/docs
 
 ---
 
-## Sizebud Developer/Admin API Documentation
+## FastAPI-Template Developer/Admin API Documentation
 
 ### Base URL
 
-* Production: `https://api.sizebud.com` (adjust if different)
+* Production: `https://fastapi-template-app-entxr.ondigitalocean.app` (adjust if different)
 
 ### Authentication model (sessions)
 
@@ -16,7 +16,7 @@ This API uses **cookie-based sessions**.
 * On successful login, the server sets a cookie named: `fastapi_session`
 * Cookie attributes (current config):
 
-  * `Domain: .sizebud.com`
+  * `Domain: .fastapi-template-app-entxr.ondigitalocean.app`
   * `Secure: true` (HTTPS required)
   * `HttpOnly: true` (not accessible from JS)
   * `SameSite: none` (required for cross-site contexts)
