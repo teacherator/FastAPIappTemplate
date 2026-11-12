@@ -589,6 +589,268 @@ def get_logged_in_user(session: SessionData):
     # Backward compatibility for legacy accounts without app_name.
     return user_col.find_one({"email": session.email})
 
+
+# ---------------------------------------------------------------------------
+# 212SO shared application data
+# ---------------------------------------------------------------------------
+#
+# These routes deliberately use the existing FastAPI session rather than a
+# second auth provider.  The data is stored in the already-provisioned MongoDB
+# database named after the app ("212so").  That keeps accounts, roles, events,
+# updates and RSVPs in one backend and removes the previous Supabase session
+# dependency from the mobile client.
+
+SPECIAL_OLYMPICS_APP = "212so"
+PROFILE_ROLES = {"Athlete", "Volunteer", "admin"}
+RSVP_VALUES = {"coming", "not_coming"}
+
+
+class SOProfilePayload(BaseModel):
+    display_name: str
+    phone: str = ""
+    age: int
+    role: str
+
+
+class SOEventPayload(BaseModel):
+    id: str | None = None
+    title: str
+    starts_at: datetime
+    location: str
+    sport: str | None = None
+    reminder_minutes: int = 60
+
+
+class SOUpdatePayload(BaseModel):
+    id: str | None = None
+    title: str
+    body: str
+    sport: str | None = None
+
+
+class SORSVPPayload(BaseModel):
+    event_id: str
+    response: str
+
+
+def require_212so_session(session: SessionData = Depends(require_session)) -> SessionData:
+    if normalize_app_name(session.app_name) != SPECIAL_OLYMPICS_APP:
+        raise HTTPException(status_code=403, detail="This session is not authorized for 212so")
+    return session
+
+
+def so_database():
+    database = client[SPECIAL_OLYMPICS_APP]
+    # The indexes make repeated requests idempotent and prevent duplicate
+    # profile or RSVP records when two devices retry a request.
+    database.profiles.create_index("email", unique=True)
+    database.events.create_index("id", unique=True)
+    database.updates.create_index("id", unique=True)
+    database.responses.create_index([("event_id", 1), ("user_id", 1)], unique=True)
+    return database
+
+
+def so_actor(session: SessionData) -> dict:
+    user = get_logged_in_user(session)
+    if not user or not user_has_app_access(user, SPECIAL_OLYMPICS_APP):
+        raise HTTPException(status_code=403, detail="212so membership is required")
+    return user
+
+
+def so_is_admin(session: SessionData) -> bool:
+    # The canonical authority is the existing FastAPI role, not a client-side
+    # setting or a role value supplied during onboarding.
+    return so_actor(session).get("type") == "admin"
+
+
+def require_212so_admin(session: SessionData = Depends(require_212so_session)) -> SessionData:
+    if not so_is_admin(session):
+        raise HTTPException(status_code=403, detail="Admin / Head Coach access is required")
+    return session
+
+
+def so_profile_document(document: dict) -> dict:
+    return {
+        "id": document["id"],
+        "email": document["email"],
+        "display_name": document["display_name"],
+        "phone": document.get("phone", ""),
+        "age": document.get("age", 0),
+        "role": document["role"],
+    }
+
+
+def so_event_document(document: dict) -> dict:
+    return {
+        "id": document["id"],
+        "title": document["title"],
+        "starts_at": document["starts_at"],
+        "location": document["location"],
+        "sport": document.get("sport"),
+        "reminder_minutes": document.get("reminder_minutes", 60),
+        "created_by": document["created_by"],
+        "created_at": document["created_at"],
+    }
+
+
+def so_update_document(document: dict) -> dict:
+    return {
+        "id": document["id"],
+        "title": document["title"],
+        "body": document["body"],
+        "sport": document.get("sport"),
+        "created_by": document["created_by"],
+        "created_at": document["created_at"],
+    }
+
+
+@app.get("/212so/profile")
+async def so_get_profile(session: SessionData = Depends(require_212so_session)):
+    document = so_database().profiles.find_one({"email": session.email.lower()})
+    if not document:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return so_profile_document(document)
+
+
+@app.put("/212so/profile")
+async def so_save_profile(payload: SOProfilePayload, session: SessionData = Depends(require_212so_session)):
+    display_name = " ".join(payload.display_name.split())
+    phone = re.sub(r"\D", "", payload.phone)
+    requested_role = payload.role.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name is required")
+    if not 1 <= payload.age <= 120:
+        raise HTTPException(status_code=400, detail="Age must be between 1 and 120")
+    if requested_role not in {"Athlete", "Volunteer"}:
+        raise HTTPException(status_code=400, detail="Choose Athlete or Volunteer")
+
+    database = so_database()
+    existing = database.profiles.find_one({"email": session.email.lower()})
+    # A FastAPI administrator stays an admin regardless of their onboarding
+    # choice.  Public clients can never promote themselves through this route.
+    role = "admin" if so_is_admin(session) else requested_role
+    profile_id = existing["id"] if existing else str(uuid4())
+    timestamp = utcnow()
+    document = {
+        "id": profile_id,
+        "email": session.email.lower(),
+        "display_name": display_name,
+        "phone": phone,
+        "age": payload.age,
+        "role": role,
+        "updated_at": timestamp,
+    }
+    database.profiles.update_one(
+        {"email": session.email.lower()},
+        {"$set": document, "$setOnInsert": {"created_at": timestamp}},
+        upsert=True,
+    )
+    return so_profile_document(database.profiles.find_one({"email": session.email.lower()}))
+
+
+@app.get("/212so/profiles")
+async def so_list_profiles(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
+    return [so_profile_document(document) for document in so_database().profiles.find({}, {"_id": 0})]
+
+
+@app.get("/212so/events")
+async def so_list_events(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
+    return [so_event_document(document) for document in so_database().events.find({}, {"_id": 0}).sort("starts_at", 1)]
+
+
+@app.post("/212so/events", status_code=status.HTTP_201_CREATED)
+async def so_create_event(payload: SOEventPayload, session: SessionData = Depends(require_212so_admin)):
+    title = " ".join(payload.title.split())
+    location = " ".join(payload.location.split())
+    if not title or not location:
+        raise HTTPException(status_code=400, detail="Event title and location are required")
+    if not 0 <= payload.reminder_minutes <= 10080:
+        raise HTTPException(status_code=400, detail="Reminder must be between 0 and 10080 minutes")
+    profile = so_database().profiles.find_one({"email": session.email.lower()})
+    if not profile:
+        raise HTTPException(status_code=409, detail="Save your profile before posting an event")
+    timestamp = utcnow()
+    document = {
+        "id": payload.id or str(uuid4()),
+        "title": title,
+        "starts_at": payload.starts_at,
+        "location": location,
+        "sport": payload.sport,
+        "reminder_minutes": payload.reminder_minutes,
+        "created_by": profile["id"],
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    try:
+        so_database().events.insert_one(document)
+    except DuplicateKeyError as error:
+        raise HTTPException(status_code=409, detail="That event already exists") from error
+    return so_event_document(document)
+
+
+@app.get("/212so/updates")
+async def so_list_updates(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
+    return [so_update_document(document) for document in so_database().updates.find({}, {"_id": 0}).sort("created_at", -1)]
+
+
+@app.post("/212so/updates", status_code=status.HTTP_201_CREATED)
+async def so_create_update(payload: SOUpdatePayload, session: SessionData = Depends(require_212so_admin)):
+    title = " ".join(payload.title.split())
+    body = payload.body.strip()
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="Update title and message are required")
+    profile = so_database().profiles.find_one({"email": session.email.lower()})
+    if not profile:
+        raise HTTPException(status_code=409, detail="Save your profile before posting an update")
+    timestamp = utcnow()
+    document = {
+        "id": payload.id or str(uuid4()),
+        "title": title,
+        "body": body,
+        "sport": payload.sport,
+        "created_by": profile["id"],
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    try:
+        so_database().updates.insert_one(document)
+    except DuplicateKeyError as error:
+        raise HTTPException(status_code=409, detail="That update already exists") from error
+    return so_update_document(document)
+
+
+@app.get("/212so/responses")
+async def so_list_responses(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
+    return list(so_database().responses.find({}, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}))
+
+
+@app.put("/212so/responses")
+async def so_save_response(payload: SORSVPPayload, session: SessionData = Depends(require_212so_session)):
+    if payload.response not in RSVP_VALUES:
+        raise HTTPException(status_code=400, detail="Response must be coming or not_coming")
+    database = so_database()
+    profile = database.profiles.find_one({"email": session.email.lower()})
+    if not profile:
+        raise HTTPException(status_code=409, detail="Save your profile before responding")
+    if not database.events.find_one({"id": payload.event_id}):
+        raise HTTPException(status_code=404, detail="Event not found")
+    document = {
+        "event_id": payload.event_id,
+        "user_id": profile["id"],
+        "response": payload.response,
+        "updated_at": utcnow(),
+    }
+    database.responses.update_one(
+        {"event_id": payload.event_id, "user_id": profile["id"]},
+        {"$set": document},
+        upsert=True,
+    )
+    return {key: document[key] for key in ("event_id", "user_id", "response")}
+
 @app.get("/")
 async def root():
     routes = [
