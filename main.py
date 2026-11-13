@@ -602,7 +602,15 @@ def get_logged_in_user(session: SessionData):
 
 SPECIAL_OLYMPICS_APP = "212so"
 PROFILE_ROLES = {"Athlete", "Volunteer", "admin"}
-RSVP_VALUES = {"coming", "not_coming"}
+# Store one canonical vocabulary, while accepting legacy values used by an
+# earlier mobile build.  This keeps a client/server wording change from
+# silently rejecting an RSVP during a rolling TestFlight rollout.
+RSVP_ALIASES = {
+    "coming": "coming",
+    "going": "coming",
+    "not_coming": "not_coming",
+    "not_going": "not_coming",
+}
 
 
 class SOProfilePayload(BaseModel):
@@ -830,7 +838,8 @@ async def so_list_responses(session: SessionData = Depends(require_212so_session
 
 @app.put("/212so/responses")
 async def so_save_response(payload: SORSVPPayload, session: SessionData = Depends(require_212so_session)):
-    if payload.response not in RSVP_VALUES:
+    response = RSVP_ALIASES.get(payload.response.strip().lower())
+    if response is None:
         raise HTTPException(status_code=400, detail="Response must be coming or not_coming")
     database = so_database()
     profile = database.profiles.find_one({"email": session.email.lower()})
@@ -841,7 +850,7 @@ async def so_save_response(payload: SORSVPPayload, session: SessionData = Depend
     document = {
         "event_id": payload.event_id,
         "user_id": profile["id"],
-        "response": payload.response,
+        "response": response,
         "updated_at": utcnow(),
     }
     database.responses.update_one(
