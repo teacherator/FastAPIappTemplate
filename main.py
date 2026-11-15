@@ -502,7 +502,7 @@ cookie_do = SessionCookie(
         secure=True,
         httponly=True,
         samesite="none",
-        max_age=3600,
+        max_age=60 * 60 * 24 * 30,
     ),
 )
 
@@ -516,7 +516,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_session(email: str, app_name: str) -> UUID:
     session_id = uuid4()
-    expires_at = utcnow() + timedelta(hours=1)
+    # A mobile session must survive closing and reopening the app. It is still
+    # revocable immediately through /logout.
+    expires_at = utcnow() + timedelta(days=30)
 
     session_collection.insert_one(
         {
@@ -642,7 +644,13 @@ class SORSVPPayload(BaseModel):
 
 
 def require_212so_session(session: SessionData = Depends(require_session)) -> SessionData:
-    if normalize_app_name(session.app_name) != SPECIAL_OLYMPICS_APP:
+    if normalize_app_name(session.app_name) == SPECIAL_OLYMPICS_APP:
+        return session
+
+    # Earlier mobile logins could save the first app on an account into the
+    # session even after the person selected 212so. Honor those old sessions
+    # only when the same email is genuinely a 212so member.
+    if not user_col.find_one(user_scope_query(session.email, SPECIAL_OLYMPICS_APP)):
         raise HTTPException(status_code=403, detail="This session is not authorized for 212so")
     return session
 
@@ -659,7 +667,12 @@ def so_database():
 
 
 def so_actor(session: SessionData) -> dict:
-    user = get_logged_in_user(session)
+    # Always resolve data access through the 212so membership. This prevents
+    # an old, incorrectly-scoped session from splitting one user across app
+    # databases on different devices.
+    user = user_col.find_one(user_scope_query(session.email, SPECIAL_OLYMPICS_APP))
+    if not user:
+        user = get_logged_in_user(session)
     if not user or not user_has_app_access(user, SPECIAL_OLYMPICS_APP):
         raise HTTPException(status_code=403, detail="212so membership is required")
     return user
@@ -714,6 +727,7 @@ def so_update_document(document: dict) -> dict:
 
 @app.get("/212so/profile")
 async def so_get_profile(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
     document = so_database().profiles.find_one({"email": session.email.lower()})
     if not document:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -902,13 +916,15 @@ async def login(
     if not user:
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    user_app = user.get("app_name") or user.get("apps", [scoped_app])[0] or scoped_app
-    session_id = create_session(email, normalize_app_name(user_app))
+    # The requested app is the authentication context. Selecting the first
+    # item in `apps` made a 212so login become a portal session for multi-app
+    # accounts, so shared writes were rejected after the UI said “posted”.
+    session_id = create_session(email, scoped_app)
 
     response.set_cookie(
         key="fastapi_session",
         value=str(session_id),
-        max_age=3600,
+        max_age=60 * 60 * 24 * 30,
         path="/",
         secure=True,
         httponly=True,
