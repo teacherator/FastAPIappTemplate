@@ -686,9 +686,15 @@ def so_actor(session: SessionData) -> dict:
 
 
 def so_is_admin(session: SessionData) -> bool:
-    # The canonical authority is the existing FastAPI role, not a client-side
-    # setting or a role value supplied during onboarding.
-    return so_actor(session).get("type") == "admin"
+    # A coach may have been approved before the FastAPI account-type field was
+    # introduced.  The app already reads that protected 212so profile role to
+    # decide whether to show coach controls, so honor either server-stored
+    # approval record.  Public onboarding cannot set `role` to admin: the
+    # profile save route below only writes it after this check succeeds.
+    if so_actor(session).get("type") == "admin":
+        return True
+    profile = so_database().profiles.find_one({"email": session.email.lower()})
+    return bool(profile and profile.get("role") == "admin")
 
 
 def require_212so_admin(session: SessionData = Depends(require_212so_session)) -> SessionData:
