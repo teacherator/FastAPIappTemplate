@@ -566,7 +566,13 @@ def delete_session(session_id: UUID) -> None:
     session_collection.delete_one({"_id": str(session_id)})
 
 async def get_session_id(request: Request) -> UUID:
-    raw = request.cookies.get("fastapi_session")
+    # Native clients retain a per-device bearer session in addition to the
+    # browser cookie.  This mirrors the durable-token behavior the mobile app
+    # previously used with Supabase and prevents a shared-data request from
+    # becoming anonymous after a cookie-store handoff.
+    authorization = request.headers.get("authorization", "")
+    raw = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
+    raw = raw or request.cookies.get("fastapi_session")
     if not raw:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
@@ -1023,7 +1029,7 @@ async def login(
         samesite="none",
     )
 
-    return {"message": "Login successful"}
+    return {"message": "Login successful", "session_token": str(session_id)}
 
 @app.post("/register")
 async def register_user(
