@@ -709,46 +709,83 @@ def require_212so_admin(session: SessionData = Depends(require_212so_session)) -
     return session
 
 
-def so_profile_document(document: dict) -> dict:
+def so_uuid(value) -> str | None:
+    """Return a UUID string the native client can safely decode.
+
+    A few records predate the FastAPI migration and may contain placeholder
+    identifiers.  Letting one of those records into a list response makes
+    Swift's all-or-nothing JSON decoder discard the *entire* shared feed.
+    """
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def so_profile_document(document: dict) -> dict | None:
+    profile_id = so_uuid(document.get("id"))
+    display_name = document.get("display_name")
+    email_address = document.get("email")
+    role = document.get("role")
+    if not profile_id or not isinstance(display_name, str) or not isinstance(email_address, str) or not isinstance(role, str):
+        return None
+    try:
+        age = int(document.get("age", 0))
+    except (TypeError, ValueError):
+        return None
     return {
-        "id": document["id"],
-        "email": document["email"],
-        "display_name": document["display_name"],
-        "phone": document.get("phone", ""),
-        "age": document.get("age", 0),
-        "role": document["role"],
+        "id": profile_id,
+        "email": email_address,
+        "display_name": display_name,
+        "phone": str(document.get("phone", "")),
+        "age": age,
+        "role": role,
     }
 
 
-def so_team_application_document(document: dict) -> dict:
+def so_team_application_document(document: dict) -> dict | None:
+    user_id = so_uuid(document.get("user_id"))
+    sport = document.get("sport")
+    status_value = document.get("status")
+    if not user_id or not isinstance(sport, str) or not isinstance(status_value, str):
+        return None
+    return {"user_id": user_id, "sport": sport, "status": status_value}
+
+
+def so_event_document(document: dict) -> dict | None:
+    event_id = so_uuid(document.get("id"))
+    starts_at = coerce_utc_datetime(document.get("starts_at"))
+    title = document.get("title")
+    location = document.get("location")
+    if not event_id or not starts_at or not isinstance(title, str) or not isinstance(location, str):
+        return None
+    try:
+        reminder_minutes = int(document.get("reminder_minutes", 60))
+    except (TypeError, ValueError):
+        reminder_minutes = 60
     return {
-        "user_id": document["user_id"],
-        "sport": document["sport"],
-        "status": document["status"],
+        "id": event_id,
+        "title": title,
+        "starts_at": starts_at,
+        "location": location,
+        "sport": document.get("sport") if isinstance(document.get("sport"), str) else None,
+        "reminder_minutes": reminder_minutes,
     }
 
 
-def so_event_document(document: dict) -> dict:
+def so_update_document(document: dict) -> dict | None:
+    update_id = so_uuid(document.get("id"))
+    created_at = coerce_utc_datetime(document.get("created_at"))
+    title = document.get("title")
+    body = document.get("body")
+    if not update_id or not created_at or not isinstance(title, str) or not isinstance(body, str):
+        return None
     return {
-        "id": document["id"],
-        "title": document["title"],
-        "starts_at": document["starts_at"],
-        "location": document["location"],
-        "sport": document.get("sport"),
-        "reminder_minutes": document.get("reminder_minutes", 60),
-        "created_by": document["created_by"],
-        "created_at": document["created_at"],
-    }
-
-
-def so_update_document(document: dict) -> dict:
-    return {
-        "id": document["id"],
-        "title": document["title"],
-        "body": document["body"],
-        "sport": document.get("sport"),
-        "created_by": document["created_by"],
-        "created_at": document["created_at"],
+        "id": update_id,
+        "title": title,
+        "body": body,
+        "sport": document.get("sport") if isinstance(document.get("sport"), str) else None,
+        "created_at": created_at,
     }
 
 
@@ -758,7 +795,10 @@ async def so_get_profile(session: SessionData = Depends(require_212so_session)):
     document = so_database().profiles.find_one({"email": session.email.lower()})
     if not document:
         raise HTTPException(status_code=404, detail="Profile not found")
-    return so_profile_document(document)
+    profile = so_profile_document(document)
+    if not profile:
+        raise HTTPException(status_code=409, detail="Profile data needs to be saved again")
+    return profile
 
 
 @app.put("/212so/profile")
@@ -808,13 +848,13 @@ async def so_list_profiles(session: SessionData = Depends(require_212so_session)
         documents = database.profiles.find({}, {"_id": 0})
     else:
         documents = database.profiles.find({"email": session.email.lower()}, {"_id": 0})
-    return [so_profile_document(document) for document in documents]
+    return [profile for document in documents if (profile := so_profile_document(document))]
 
 
 @app.get("/212so/events")
 async def so_list_events(session: SessionData = Depends(require_212so_session)):
     so_actor(session)
-    return [so_event_document(document) for document in so_database().events.find({}, {"_id": 0}).sort("starts_at", 1)]
+    return [event for document in so_database().events.find({}, {"_id": 0}).sort("starts_at", 1) if (event := so_event_document(document))]
 
 
 @app.post("/212so/events", status_code=status.HTTP_201_CREATED)
@@ -850,7 +890,7 @@ async def so_create_event(payload: SOEventPayload, session: SessionData = Depend
 @app.get("/212so/updates")
 async def so_list_updates(session: SessionData = Depends(require_212so_session)):
     so_actor(session)
-    return [so_update_document(document) for document in so_database().updates.find({}, {"_id": 0}).sort("created_at", -1)]
+    return [update for document in so_database().updates.find({}, {"_id": 0}).sort("created_at", -1) if (update := so_update_document(document))]
 
 
 @app.post("/212so/updates", status_code=status.HTTP_201_CREATED)
@@ -890,7 +930,14 @@ async def so_list_responses(session: SessionData = Depends(require_212so_session
         if not profile:
             return []
         query = {"user_id": profile["id"]}
-    return list(database.responses.find(query, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}))
+    responses = []
+    for document in database.responses.find(query, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}):
+        event_id = so_uuid(document.get("event_id"))
+        user_id = so_uuid(document.get("user_id"))
+        response = document.get("response")
+        if event_id and user_id and isinstance(response, str):
+            responses.append({"event_id": event_id, "user_id": user_id, "response": response})
+    return responses
 
 
 @app.put("/212so/responses")
@@ -930,7 +977,7 @@ async def so_list_team_applications(session: SessionData = Depends(require_212so
         if not profile:
             return []
         query = {"user_id": profile["id"]}
-    return [so_team_application_document(document) for document in database.team_applications.find(query, {"_id": 0})]
+    return [application for document in database.team_applications.find(query, {"_id": 0}) if (application := so_team_application_document(document))]
 
 
 @app.put("/212so/team-applications")
