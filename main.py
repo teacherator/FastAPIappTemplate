@@ -643,6 +643,12 @@ class SORSVPPayload(BaseModel):
     response: str
 
 
+class SOTeamApplicationPayload(BaseModel):
+    sport: str
+    user_id: str | None = None
+    status: str | None = None
+
+
 def require_212so_session(session: SessionData = Depends(require_session)) -> SessionData:
     if normalize_app_name(session.app_name) == SPECIAL_OLYMPICS_APP:
         return session
@@ -663,6 +669,7 @@ def so_database():
     database.events.create_index("id", unique=True)
     database.updates.create_index("id", unique=True)
     database.responses.create_index([("event_id", 1), ("user_id", 1)], unique=True)
+    database.team_applications.create_index([("user_id", 1), ("sport", 1)], unique=True)
     return database
 
 
@@ -701,6 +708,14 @@ def so_profile_document(document: dict) -> dict:
     }
 
 
+def so_team_application_document(document: dict) -> dict:
+    return {
+        "user_id": document["user_id"],
+        "sport": document["sport"],
+        "status": document["status"],
+    }
+
+
 def so_event_document(document: dict) -> dict:
     return {
         "id": document["id"],
@@ -736,6 +751,7 @@ async def so_get_profile(session: SessionData = Depends(require_212so_session)):
 
 @app.put("/212so/profile")
 async def so_save_profile(payload: SOProfilePayload, session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
     display_name = " ".join(payload.display_name.split())
     phone = re.sub(r"\D", "", payload.phone)
     requested_role = payload.role.strip()
@@ -772,8 +788,15 @@ async def so_save_profile(payload: SOProfilePayload, session: SessionData = Depe
 
 @app.get("/212so/profiles")
 async def so_list_profiles(session: SessionData = Depends(require_212so_session)):
-    so_actor(session)
-    return [so_profile_document(document) for document in so_database().profiles.find({}, {"_id": 0})]
+    actor = so_actor(session)
+    database = so_database()
+    # Contact data may belong to minors. Coaches can see their roster; every
+    # other member receives only their own profile.
+    if actor.get("type") == "admin":
+        documents = database.profiles.find({}, {"_id": 0})
+    else:
+        documents = database.profiles.find({"email": session.email.lower()}, {"_id": 0})
+    return [so_profile_document(document) for document in documents]
 
 
 @app.get("/212so/events")
@@ -846,12 +869,21 @@ async def so_create_update(payload: SOUpdatePayload, session: SessionData = Depe
 
 @app.get("/212so/responses")
 async def so_list_responses(session: SessionData = Depends(require_212so_session)):
-    so_actor(session)
-    return list(so_database().responses.find({}, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}))
+    actor = so_actor(session)
+    database = so_database()
+    if actor.get("type") == "admin":
+        query = {}
+    else:
+        profile = database.profiles.find_one({"email": session.email.lower()})
+        if not profile:
+            return []
+        query = {"user_id": profile["id"]}
+    return list(database.responses.find(query, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}))
 
 
 @app.put("/212so/responses")
 async def so_save_response(payload: SORSVPPayload, session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
     response = RSVP_ALIASES.get(payload.response.strip().lower())
     if response is None:
         raise HTTPException(status_code=400, detail="Response must be coming or not_coming")
@@ -873,6 +905,60 @@ async def so_save_response(payload: SORSVPPayload, session: SessionData = Depend
         upsert=True,
     )
     return {key: document[key] for key in ("event_id", "user_id", "response")}
+
+
+@app.get("/212so/team-applications")
+async def so_list_team_applications(session: SessionData = Depends(require_212so_session)):
+    actor = so_actor(session)
+    database = so_database()
+    if actor.get("type") == "admin":
+        query = {}
+    else:
+        profile = database.profiles.find_one({"email": session.email.lower()})
+        if not profile:
+            return []
+        query = {"user_id": profile["id"]}
+    return [so_team_application_document(document) for document in database.team_applications.find(query, {"_id": 0})]
+
+
+@app.put("/212so/team-applications")
+async def so_save_team_application(payload: SOTeamApplicationPayload, session: SessionData = Depends(require_212so_session)):
+    actor = so_actor(session)
+    database = so_database()
+    sport = " ".join(payload.sport.split())
+    if not sport or len(sport) > 80:
+        raise HTTPException(status_code=400, detail="Choose a valid sport")
+
+    actor_profile = database.profiles.find_one({"email": session.email.lower()})
+    if not actor_profile:
+        raise HTTPException(status_code=409, detail="Save your profile before applying to a team")
+
+    is_admin = actor.get("type") == "admin"
+    if is_admin and payload.user_id:
+        user_id = payload.user_id
+        status_value = (payload.status or "pending").lower()
+        if status_value not in {"pending", "approved", "declined"}:
+            raise HTTPException(status_code=400, detail="Invalid application status")
+        if not database.profiles.find_one({"id": user_id}):
+            raise HTTPException(status_code=404, detail="Athlete profile not found")
+    else:
+        if actor_profile.get("role") != "Athlete":
+            raise HTTPException(status_code=403, detail="Only athletes can request a team")
+        user_id = actor_profile["id"]
+        status_value = "pending"
+
+    document = {
+        "user_id": user_id,
+        "sport": sport,
+        "status": status_value,
+        "updated_at": utcnow(),
+    }
+    database.team_applications.update_one(
+        {"user_id": user_id, "sport": sport},
+        {"$set": document, "$setOnInsert": {"created_at": utcnow()}},
+        upsert=True,
+    )
+    return so_team_application_document(document)
 
 @app.get("/")
 async def root():
