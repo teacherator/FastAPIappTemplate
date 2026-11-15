@@ -887,6 +887,37 @@ async def so_create_event(payload: SOEventPayload, session: SessionData = Depend
     return so_event_document(document)
 
 
+@app.put("/212so/events/{event_id}")
+async def so_update_event(event_id: str, payload: SOEventPayload, session: SessionData = Depends(require_212so_admin)):
+    title = " ".join(payload.title.split())
+    location = " ".join(payload.location.split())
+    if not title or not location:
+        raise HTTPException(status_code=400, detail="Event title and location are required")
+    if not 0 <= payload.reminder_minutes <= 10080:
+        raise HTTPException(status_code=400, detail="Reminder must be between 0 and 10080 minutes")
+    database = so_database()
+    existing = database.events.find_one({"id": event_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Event not found")
+    database.events.update_one({"id": event_id}, {"$set": {
+        "title": title, "starts_at": payload.starts_at, "location": location,
+        "sport": payload.sport, "reminder_minutes": payload.reminder_minutes,
+        "updated_at": utcnow(),
+    }})
+    return so_event_document(database.events.find_one({"id": event_id}))
+
+
+@app.delete("/212so/events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def so_delete_event(event_id: str, session: SessionData = Depends(require_212so_admin)):
+    database = so_database()
+    result = database.events.delete_one({"id": event_id})
+    if not result.deleted_count:
+        raise HTTPException(status_code=404, detail="Event not found")
+    # An RSVP has no meaning after its event is deleted.
+    database.responses.delete_many({"event_id": event_id})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/212so/updates")
 async def so_list_updates(session: SessionData = Depends(require_212so_session)):
     so_actor(session)
@@ -917,6 +948,28 @@ async def so_create_update(payload: SOUpdatePayload, session: SessionData = Depe
     except DuplicateKeyError as error:
         raise HTTPException(status_code=409, detail="That update already exists") from error
     return so_update_document(document)
+
+
+@app.put("/212so/updates/{update_id}")
+async def so_update_update(update_id: str, payload: SOUpdatePayload, session: SessionData = Depends(require_212so_admin)):
+    title = " ".join(payload.title.split())
+    body = payload.body.strip()
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="Update title and message are required")
+    database = so_database()
+    if not database.updates.find_one({"id": update_id}):
+        raise HTTPException(status_code=404, detail="Update not found")
+    database.updates.update_one({"id": update_id}, {"$set": {
+        "title": title, "body": body, "sport": payload.sport, "updated_at": utcnow(),
+    }})
+    return so_update_document(database.updates.find_one({"id": update_id}))
+
+
+@app.delete("/212so/updates/{update_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def so_delete_update(update_id: str, session: SessionData = Depends(require_212so_admin)):
+    if not so_database().updates.delete_one({"id": update_id}).deleted_count:
+        raise HTTPException(status_code=404, detail="Update not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/212so/responses")
