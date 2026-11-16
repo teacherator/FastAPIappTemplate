@@ -722,6 +722,21 @@ def so_uuid(value) -> str | None:
         return None
 
 
+def so_profile_by_id(database, profile_id: str) -> dict | None:
+    """Find a profile by its canonical UUID across legacy Mongo encodings."""
+    wanted = so_uuid(profile_id)
+    if not wanted:
+        return None
+    # New records use a string UUID, so keep the normal indexed query fast.
+    profile = database.profiles.find_one({"id": wanted})
+    if profile:
+        return profile
+    # Pre-migration records may contain a UUID object rather than its string
+    # value. Match by canonical value so an admin can still approve that
+    # athlete rather than receiving a false "profile not found" error.
+    return next((item for item in database.profiles.find({}) if so_uuid(item.get("id")) == wanted), None)
+
+
 def so_profile_document(document: dict) -> dict | None:
     profile_id = so_uuid(document.get("id"))
     display_name = document.get("display_name")
@@ -840,11 +855,11 @@ async def so_save_profile(payload: SOProfilePayload, session: SessionData = Depe
 
 @app.get("/212so/profiles")
 async def so_list_profiles(session: SessionData = Depends(require_212so_session)):
-    actor = so_actor(session)
+    so_actor(session)
     database = so_database()
     # Contact data may belong to minors. Coaches can see their roster; every
     # other member receives only their own profile.
-    if actor.get("type") == "admin":
+    if so_is_admin(session):
         documents = database.profiles.find({}, {"_id": 0})
     else:
         documents = database.profiles.find({"email": session.email.lower()}, {"_id": 0})
@@ -974,15 +989,16 @@ async def so_delete_update(update_id: str, session: SessionData = Depends(requir
 
 @app.get("/212so/responses")
 async def so_list_responses(session: SessionData = Depends(require_212so_session)):
-    actor = so_actor(session)
+    so_actor(session)
     database = so_database()
-    if actor.get("type") == "admin":
+    if so_is_admin(session):
         query = {}
     else:
         profile = database.profiles.find_one({"email": session.email.lower()})
         if not profile:
             return []
-        query = {"user_id": profile["id"]}
+        canonical_id = so_uuid(profile.get("id"))
+        query = {"user_id": {"$in": [profile["id"], canonical_id] if canonical_id else [profile["id"]]}}
     responses = []
     for document in database.responses.find(query, {"_id": 0, "event_id": 1, "user_id": 1, "response": 1}):
         event_id = so_uuid(document.get("event_id"))
@@ -1021,15 +1037,16 @@ async def so_save_response(payload: SORSVPPayload, session: SessionData = Depend
 
 @app.get("/212so/team-applications")
 async def so_list_team_applications(session: SessionData = Depends(require_212so_session)):
-    actor = so_actor(session)
+    so_actor(session)
     database = so_database()
-    if actor.get("type") == "admin":
+    if so_is_admin(session):
         query = {}
     else:
         profile = database.profiles.find_one({"email": session.email.lower()})
         if not profile:
             return []
-        query = {"user_id": profile["id"]}
+        canonical_id = so_uuid(profile.get("id"))
+        query = {"user_id": {"$in": [profile["id"], canonical_id] if canonical_id else [profile["id"]]}}
     return [application for document in database.team_applications.find(query, {"_id": 0}) if (application := so_team_application_document(document))]
 
 
@@ -1045,18 +1062,24 @@ async def so_save_team_application(payload: SOTeamApplicationPayload, session: S
     if not actor_profile:
         raise HTTPException(status_code=409, detail="Save your profile before applying to a team")
 
-    is_admin = actor.get("type") == "admin"
+    is_admin = so_is_admin(session)
     if is_admin and payload.user_id:
-        user_id = payload.user_id
+        target_profile = so_profile_by_id(database, payload.user_id)
+        if not target_profile:
+            raise HTTPException(status_code=404, detail="Athlete profile not found")
+        # Keep the canonical string UUID in new application records. This
+        # prevents different devices from splitting a legacy UUID into two
+        # approval rows.
+        user_id = so_uuid(target_profile.get("id"))
         status_value = (payload.status or "pending").lower()
         if status_value not in {"pending", "approved", "declined"}:
             raise HTTPException(status_code=400, detail="Invalid application status")
-        if not database.profiles.find_one({"id": user_id}):
-            raise HTTPException(status_code=404, detail="Athlete profile not found")
     else:
         if actor_profile.get("role") != "Athlete":
             raise HTTPException(status_code=403, detail="Only athletes can request a team")
-        user_id = actor_profile["id"]
+        user_id = so_uuid(actor_profile.get("id"))
+        if not user_id:
+            raise HTTPException(status_code=409, detail="Profile data needs to be saved again")
         status_value = "pending"
 
     document = {
