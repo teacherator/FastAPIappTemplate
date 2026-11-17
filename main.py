@@ -655,6 +655,15 @@ class SOTeamApplicationPayload(BaseModel):
     status: str | None = None
 
 
+class SOStatPayload(BaseModel):
+    id: str | None = None
+    athlete_id: str
+    event_id: str
+    group: str
+    date: datetime
+    values: dict[str, int]
+
+
 def require_212so_session(session: SessionData = Depends(require_session)) -> SessionData:
     if normalize_app_name(session.app_name) == SPECIAL_OLYMPICS_APP:
         return session
@@ -676,6 +685,8 @@ def so_database():
     database.updates.create_index("id", unique=True)
     database.responses.create_index([("event_id", 1), ("user_id", 1)], unique=True)
     database.team_applications.create_index([("user_id", 1), ("sport", 1)], unique=True)
+    database.stats.create_index("id", unique=True)
+    database.stats.create_index([("event_id", 1), ("athlete_id", 1)], unique=True)
     return database
 
 
@@ -802,6 +813,22 @@ def so_update_document(document: dict) -> dict | None:
         "sport": document.get("sport") if isinstance(document.get("sport"), str) else None,
         "created_at": created_at,
     }
+
+
+def so_stat_document(document: dict) -> dict | None:
+    stat_id = so_uuid(document.get("id"))
+    athlete_id = so_uuid(document.get("athlete_id"))
+    event_id = so_uuid(document.get("event_id"))
+    date = coerce_utc_datetime(document.get("date"))
+    group = document.get("group")
+    values = document.get("values")
+    if not stat_id or not athlete_id or not event_id or not date or not isinstance(group, str) or not isinstance(values, dict):
+        return None
+    try:
+        safe_values = {str(key): int(value) for key, value in values.items()}
+    except (TypeError, ValueError):
+        return None
+    return {"id": stat_id, "athlete_id": athlete_id, "event_id": event_id, "group": group, "date": date, "values": safe_values}
 
 
 @app.get("/212so/profile")
@@ -1094,6 +1121,52 @@ async def so_save_team_application(payload: SOTeamApplicationPayload, session: S
         upsert=True,
     )
     return so_team_application_document(document)
+
+
+@app.get("/212so/stats")
+async def so_list_stats(session: SessionData = Depends(require_212so_session)):
+    so_actor(session)
+    database = so_database()
+    if so_is_admin(session):
+        query = {}
+    else:
+        profile = database.profiles.find_one({"email": session.email.lower()})
+        if not profile:
+            return []
+        profile_id = so_uuid(profile.get("id"))
+        query = {"athlete_id": {"$in": [profile.get("id"), profile_id] if profile_id else [profile.get("id")]}}
+    return [line for document in database.stats.find(query, {"_id": 0}).sort("date", 1) if (line := so_stat_document(document))]
+
+
+@app.put("/212so/stats")
+async def so_save_stat(payload: SOStatPayload, session: SessionData = Depends(require_212so_admin)):
+    database = so_database()
+    athlete = so_profile_by_id(database, payload.athlete_id)
+    if not athlete or athlete.get("role") != "Athlete":
+        raise HTTPException(status_code=404, detail="Athlete profile not found")
+    if not database.events.find_one({"id": payload.event_id}):
+        raise HTTPException(status_code=404, detail="Event not found")
+    athlete_id = so_uuid(athlete.get("id"))
+    event_id = so_uuid(payload.event_id)
+    if not athlete_id or not event_id or not payload.group.strip():
+        raise HTTPException(status_code=400, detail="Invalid stat sheet")
+    if any(value < 0 or value > 1_000_000 for value in payload.values.values()):
+        raise HTTPException(status_code=400, detail="Stat values must be between 0 and 1000000")
+    existing = database.stats.find_one({"event_id": event_id, "athlete_id": athlete_id})
+    document = {
+        "id": existing.get("id") if existing else (payload.id or str(uuid4())),
+        "athlete_id": athlete_id,
+        "event_id": event_id,
+        "group": payload.group.strip(),
+        "date": payload.date,
+        "values": payload.values,
+        "updated_at": utcnow(),
+    }
+    database.stats.update_one(
+        {"event_id": event_id, "athlete_id": athlete_id},
+        {"$set": document, "$setOnInsert": {"created_at": utcnow()}}, upsert=True,
+    )
+    return so_stat_document(document)
 
 @app.get("/")
 async def root():
